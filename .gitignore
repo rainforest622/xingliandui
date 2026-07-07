@@ -1,0 +1,35 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log
+
+# HarmonyOS / DevEco build outputs
+.hvigor/
+oh_modules/
+build/
+**/build/
+**/.preview/
+**/.cxx/
+
+# Native / SDK build outputs
+out/
+output/
+*.elf
+*.map
+*.bin
+
+# Python helper caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local temporary files
+tmp/
+temp/
+*.zip
+
+# Keep these verified demo artifacts tracked on purpose.
+!firmware/prebuilt/*.fwpkg
+!mobile/prebuilt/*.hap
