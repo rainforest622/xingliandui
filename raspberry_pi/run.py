@@ -10,69 +10,149 @@ from urllib.parse import unquote
 
 import cv2
 
+from alarm.manager import AlarmManager
 from camera.capture import CameraCapture
 from detection.person_detector import PersonDetector
 from metrics.collector import MetricsCollector
-from alarm.manager import AlarmManager
 
 _HTML = """<!DOCTYPE html>
 <html lang="zh">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>WS63 Inspection — Pi 5 Vision</title>
+<title>WS63 Robot - Raspberry Pi Camera</title>
 <style>
-  body { margin:0; background:#111; color:#eee; font-family:monospace; display:flex; flex-direction:column; align-items:center; }
-  img { max-width:100%; border:2px solid #333; margin:8px; }
-  #panel { display:flex; gap:12px; flex-wrap:wrap; justify-content:center; padding:8px; }
-  .card { background:#1a1a2e; border:1px solid #333; border-radius:6px; padding:8px 14px; min-width:100px; text-align:center; }
-  .card .val { font-size:20px; font-weight:bold; color:#0f0; }
-  .alarm-on .val { color:#f33; }
-  .warn .val { color:#fa0; }
-  #alarms { max-width:640px; width:100%; padding:8px; }
-  #alarms h3 { margin:4px 0; }
-  .alarm-row { background:#2a1a1a; border:1px solid #633; border-radius:4px; padding:4px 8px; margin:4px 0; font-size:13px; }
+  :root { color-scheme: dark; }
+  body { margin:0; background:#101214; color:#e9eef5; font-family:Arial, sans-serif; }
+  header { padding:14px 16px 8px; background:#171b20; border-bottom:1px solid #26303a; }
+  h1 { margin:0; font-size:20px; }
+  .sub { margin-top:4px; color:#9aa8b8; font-size:13px; }
+  #stream { display:block; width:100%; max-height:64vh; object-fit:contain; background:#050607; }
+  #panel { display:grid; grid-template-columns:repeat(auto-fit, minmax(112px, 1fr)); gap:8px; padding:10px; }
+  .card { background:#171b20; border:1px solid #28323c; border-radius:6px; padding:8px 10px; min-height:54px; }
+  .label { color:#94a3b8; font-size:12px; }
+  .val { margin-top:3px; font-size:19px; font-weight:700; color:#7fd08a; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .warn .val { color:#ffbf66; }
+  .bad .val { color:#ff6b6b; }
+  #camera-error { padding:0 12px 8px; color:#ffbf66; font-size:13px; word-break:break-word; }
+  #alarms { padding:0 10px 14px; }
+  #alarms h3 { margin:6px 0; font-size:15px; color:#cbd5e1; }
+  .alarm-row { background:#2a1717; border:1px solid #633; border-radius:4px; padding:6px 8px; margin:4px 0; font-size:13px; }
+  a { color:#8bd3ff; }
 </style>
 </head>
 <body>
+<header>
+  <h1>Raspberry Pi Camera</h1>
+  <div class="sub">Real CSI/USB camera stream from the robot Raspberry Pi</div>
+</header>
 <img id="stream" src="/stream.mjpg" alt="MJPEG stream">
 <div id="panel">
-  <div class="card"><div>FPS</div><div class="val" id="fps">--</div></div>
-  <div class="card"><div>CPU</div><div class="val" id="cpu">--</div></div>
-  <div class="card"><div>Temp</div><div class="val" id="temp">--</div></div>
-  <div class="card"><div>BW kbps</div><div class="val" id="bw">--</div></div>
-  <div class="card"><div>Drop</div><div class="val" id="drop">--</div></div>
-  <div class="card" id="det-card"><div>Detection</div><div class="val" id="det">--</div></div>
-  <div class="card" id="alarm-card"><div>Alarm</div><div class="val" id="alarm">--</div></div>
+  <div class="card"><div class="label">Camera</div><div class="val" id="backend">--</div></div>
+  <div class="card"><div class="label">Frame</div><div class="val" id="frame">--</div></div>
+  <div class="card"><div class="label">FPS</div><div class="val" id="fps">--</div></div>
+  <div class="card"><div class="label">CPU</div><div class="val" id="cpu">--</div></div>
+  <div class="card"><div class="label">Temp</div><div class="val" id="temp">--</div></div>
+  <div class="card"><div class="label">BW kbps</div><div class="val" id="bw">--</div></div>
+  <div class="card"><div class="label">Drop</div><div class="val" id="drop">--</div></div>
+  <div class="card" id="det-card"><div class="label">Detection</div><div class="val" id="det">--</div></div>
+  <div class="card" id="alarm-card"><div class="label">Alarm</div><div class="val" id="alarm">--</div></div>
 </div>
+<div id="camera-error"></div>
 <div id="alarms"><h3>Recent Alarms</h3></div>
 <script>
 (async function loop() {
   try {
     const r = await fetch('/status');
     const s = await r.json();
-    document.getElementById('fps').textContent = s.fps_actual.toFixed(1);
-    document.getElementById('cpu').textContent = s.cpu_percent.toFixed(1) + '%';
-    var tc = document.getElementById('temp');
-    tc.textContent = s.cpu_temp_c != null ? s.cpu_temp_c.toFixed(0) + '°C' : '--';
-    if (s.cpu_temp_c > 75) tc.parentElement.className = 'card warn';
-    else tc.parentElement.className = 'card';
-    document.getElementById('bw').textContent = s.bandwidth_kbps.toFixed(0);
-    document.getElementById('drop').textContent = (s.drop_rate * 100).toFixed(1) + '%';
+    const backend = document.getElementById('backend');
+    backend.textContent = s.camera_backend || '--';
+    backend.parentElement.className = s.camera_backend === 'error' ? 'card bad' : 'card';
+    document.getElementById('frame').textContent = s.frame_ready ? String(s.frames_total) : 'WAIT';
+    document.getElementById('fps').textContent = Number(s.fps_actual || 0).toFixed(1);
+    document.getElementById('cpu').textContent = Number(s.cpu_percent || 0).toFixed(1) + '%';
+    const temp = document.getElementById('temp');
+    temp.textContent = s.cpu_temp_c != null ? Number(s.cpu_temp_c).toFixed(0) + ' C' : '--';
+    temp.parentElement.className = s.cpu_temp_c > 75 ? 'card warn' : 'card';
+    document.getElementById('bw').textContent = Number(s.bandwidth_kbps || 0).toFixed(0);
+    document.getElementById('drop').textContent = (Number(s.drop_rate || 0) * 100).toFixed(1) + '%';
     document.getElementById('det').textContent = s.person_detected ? 'PERSON' : 'CLEAR';
-    document.getElementById('det').style.color = s.person_detected ? '#f33' : '#0f0';
-    var ac = document.getElementById('alarm-card');
-    ac.className = s.alarm_active ? 'card alarm-on' : 'card';
+    document.getElementById('det').style.color = s.person_detected ? '#ff6b6b' : '#7fd08a';
+    const alarmCard = document.getElementById('alarm-card');
+    alarmCard.className = s.alarm_active ? 'card bad' : 'card';
     document.getElementById('alarm').textContent = s.alarm_active ? 'ON' : 'OFF';
+    document.getElementById('camera-error').textContent = s.camera_error ? 'Camera: ' + s.camera_error : '';
     const ar = await fetch('/alarms');
     const alarms = await ar.json();
     const div = document.getElementById('alarms');
     div.innerHTML = '<h3>Recent Alarms (' + alarms.length + ')</h3>' +
       alarms.slice(-10).reverse().map(a =>
-        '<div class="alarm-row">' + a.time + ' &mdash; ' + a.filename +
-        ' <a href="/snapshots/' + a.filename + '" style="color:#6cf">view</a></div>'
+        '<div class="alarm-row">' + a.time + ' - ' + a.filename +
+        ' <a href="/snapshots/' + a.filename + '">view</a></div>'
       ).join('');
-  } catch(e) {}
+  } catch(e) {
+    document.getElementById('camera-error').textContent = 'Status request failed. Check Pi service and Wi-Fi.';
+  }
+  setTimeout(loop, 1500);
+})();
+</script>
+</body>
+</html>"""
+
+_DRIVER_HTML = """<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>WS63 Robot Driver Camera</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { width:100%; height:100%; margin:0; overflow:hidden; background:#050607; }
+  body { font-family:Arial, sans-serif; color:#e5eef8; }
+  #stage { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:#050607; }
+  #stream { width:100vw; height:100vh; object-fit:contain; background:#050607; }
+  #hud {
+    position:fixed; left:10px; right:10px; bottom:10px; display:flex; align-items:center; gap:8px;
+    padding:7px 9px; border:1px solid rgba(148,163,184,.26); border-radius:6px;
+    background:rgba(5,6,7,.68); backdrop-filter:blur(6px); box-sizing:border-box;
+  }
+  .pill { flex:0 0 auto; padding:4px 7px; border-radius:5px; font-size:12px; font-weight:700; background:#14532d; color:#dcfce7; }
+  .pill.wait { background:#713f12; color:#fef3c7; }
+  .pill.bad { background:#7f1d1d; color:#fee2e2; }
+  #detail { flex:1 1 auto; min-width:0; color:#cbd5e1; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+</style>
+</head>
+<body>
+<div id="stage"><img id="stream" src="/stream.mjpg" alt="MJPEG stream"></div>
+<div id="hud"><div id="state" class="pill wait">WAIT</div><div id="detail">camera starting</div></div>
+<script>
+(async function loop() {
+  try {
+    const r = await fetch('/status', { cache: 'no-store' });
+    const s = await r.json();
+    const state = document.getElementById('state');
+    const detail = document.getElementById('detail');
+    if (s.camera_error) {
+      state.className = 'pill bad';
+      state.textContent = 'ERROR';
+      detail.textContent = s.camera_error;
+    } else if (s.frame_ready) {
+      state.className = 'pill';
+      state.textContent = 'LIVE';
+      detail.textContent = (s.camera_backend || 'camera') + ' | ' +
+        Number(s.fps_actual || 0).toFixed(1) + ' fps | frame ' +
+        String(s.frames_total || 0);
+    } else {
+      state.className = 'pill wait';
+      state.textContent = 'WAIT';
+      detail.textContent = 'service online, waiting for a frame';
+    }
+  } catch(e) {
+    const state = document.getElementById('state');
+    state.className = 'pill bad';
+    state.textContent = 'OFFLINE';
+    document.getElementById('detail').textContent = 'status request failed';
+  }
   setTimeout(loop, 1500);
 })();
 </script>
@@ -86,10 +166,14 @@ class RequestHandler(server.BaseHTTPRequestHandler):
 
         if path == "/":
             self._serve_html()
+        elif path == "/driver":
+            self._serve_driver_html()
         elif path == "/stream.mjpg":
             self._serve_stream()
         elif path == "/status":
             self._serve_status()
+        elif path == "/healthz":
+            self._serve_healthz()
         elif path == "/alarms":
             self._serve_alarms()
         elif path.startswith("/snapshots/"):
@@ -105,6 +189,14 @@ class RequestHandler(server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _serve_driver_html(self) -> None:
+        body = _DRIVER_HTML.encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _serve_stream(self) -> None:
         self.send_response(200)
         self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
@@ -112,19 +204,18 @@ class RequestHandler(server.BaseHTTPRequestHandler):
         while True:
             frame, _fps = self.server.capture.read()
             if frame is None:
+                if self.server.capture.active_backend == "error":
+                    return
                 time.sleep(0.02)
                 continue
             self.server.metrics.tick_captured()
 
-            # Non-blocking: feed frame to async detector
             self.server.detector.feed(frame)
-            # Read latest async detection result
             person_present = self.server.detector.last_present
-            # Feed alarm manager from cached detection result
             person_count = len(self.server.detector.last_boxes)
             self.server.alarm.feed(person_present, frame, person_count)
 
-            annotated = self.server.detector.annotate(frame)
+            annotated = self.server.detector.annotate(frame.copy())
             ok, encoded = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 75])
             if not ok:
                 continue
@@ -134,22 +225,34 @@ class RequestHandler(server.BaseHTTPRequestHandler):
                 self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n\r\n")
                 self.wfile.write(data)
                 self.wfile.write(b"\r\n")
-            except (BrokenPipeError, ConnectionResetError):
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                 return
             time.sleep(1.0 / max(1, self.server.capture.target_fps))
 
     def _serve_status(self) -> None:
         metrics = self.server.metrics.snapshot()
         status = {
-            "fps_actual": self.server.capture.read()[1],
-            "fps_target": self.server.capture.target_fps,
-            "frames_total": self.server.capture.frames_total,
+            **self.server.capture.status(),
             "person_detected": self.server.detector.last_present,
             "alarm_active": self.server.alarm.active,
             **metrics,
         }
         body = json.dumps(status).encode()
         self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _serve_healthz(self) -> None:
+        frame_ready = self.server.capture.read()[0] is not None
+        body = json.dumps({
+            "ok": frame_ready and self.server.capture.active_backend != "error",
+            "camera_backend": self.server.capture.active_backend,
+            "camera_error": self.server.capture.last_error,
+        }).encode()
+        status_code = 200 if frame_ready else 503
+        self.send_response(status_code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -190,25 +293,50 @@ class AppServer(server.ThreadingHTTPServer):
     daemon_threads = True
 
 
+def build_capture(args: argparse.Namespace) -> CameraCapture:
+    return CameraCapture(
+        args.camera,
+        args.width,
+        args.height,
+        args.fps,
+        args.synthetic,
+        args.camera_backend,
+    )
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="WS63 Pi 5 Vision — MJPEG + async person detection")
+    parser = argparse.ArgumentParser(description="WS63 Pi Vision: real camera MJPEG + person detection")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--camera", type=int, default=0)
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
-    parser.add_argument("--fps", type=int, default=15, help="Target FPS (10/15/20)")
+    parser.add_argument("--fps", type=int, default=15, help="Target FPS")
+    parser.add_argument(
+        "--camera-backend",
+        choices=["auto", "picamera2", "v4l2", "synthetic"],
+        default="auto",
+        help="auto tries Picamera2/CSI first, then V4L2 /dev/video*",
+    )
     parser.add_argument("--synthetic", action="store_true")
-    parser.add_argument("--detect-cooldown", type=float, default=0.5,
-                        help="Min seconds between SSD runs (default 0.5)")
-    parser.add_argument("--motion-threshold", type=float, default=0.01,
-                        help="Motion trigger sensitivity 0..1 (default 0.01)")
+    parser.add_argument("--self-test", action="store_true", help="Open the camera, wait for one frame, print JSON, and exit")
+    parser.add_argument("--camera-timeout", type=float, default=8.0)
+    parser.add_argument("--detect-cooldown", type=float, default=0.5)
+    parser.add_argument("--motion-threshold", type=float, default=0.01)
     parser.add_argument("--no-detect", action="store_true", help="Disable person detection entirely")
     parser.add_argument("--alarm-cooldown", type=float, default=5.0)
     parser.add_argument("--snapshot-dir", default="snapshots")
     args = parser.parse_args()
 
-    capture = CameraCapture(args.camera, args.width, args.height, args.fps, args.synthetic)
+    capture = build_capture(args)
+    capture.start()
+
+    if args.self_test:
+        ok = capture.wait_for_frame(args.camera_timeout)
+        print(json.dumps(capture.status(), indent=2))
+        capture.stop()
+        raise SystemExit(0 if ok else 2)
+
     detector = PersonDetector(
         cooldown_sec=args.detect_cooldown,
         motion_threshold=args.motion_threshold,
@@ -216,7 +344,6 @@ def main() -> None:
     metrics = MetricsCollector()
     alarm = AlarmManager(snapshot_dir=args.snapshot_dir, cooldown_sec=args.alarm_cooldown)
 
-    capture.start()
     if not args.no_detect:
         detector.start()
 
@@ -232,11 +359,12 @@ def main() -> None:
         url = f"http://localhost:{args.port}"
     print(f"MJPEG stream:  {url}/stream.mjpg")
     print(f"Status:        {url}/status")
+    print(f"Health:        {url}/healthz")
     print(f"Alarms:        {url}/alarms")
     print(f"Snapshots:     {srv.snapshot_dir}")
     print(f"FPS target:    {args.fps}")
-    print(f"Detection:     {'off' if args.no_detect else ('SSD ready' if detector.model_loaded else 'NO MODEL — run: bash download_models.sh')}")
-    print(f"Synthetic:     {args.synthetic}")
+    print(f"Camera:        requested={capture.backend}, active={capture.active_backend}")
+    print(f"Detection:     {'off' if args.no_detect else ('SSD ready' if detector.model_loaded else 'NO MODEL')}")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

@@ -1,0 +1,12 @@
+{
+  "string": [
+    {
+      "name": "app_name",
+      "value": "WS63 Robot"
+    },
+    {
+      "name": "permission_reason_nearlink",
+      "value": "Scan and connect the WS63 NearLink robot"
+    }
+  ]
+}

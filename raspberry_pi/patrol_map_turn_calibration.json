@@ -1,0 +1,42 @@
+{
+  "name": "turn-calibration-v1",
+  "description": "Short movement test for confirming the WAVE ROVER turn threshold before running the full patrol map.",
+  "area_m2": 40,
+  "default_speed": 0.22,
+  "default_turn_speed": 0.35,
+  "default_loops": 1,
+  "notes": [
+    "This file is for calibration only.",
+    "It runs a short forward pulse, waits, then performs one right turn pulse.",
+    "Adjust turn_test duration_s until the robot turns close to 90 degrees."
+  ],
+  "steps": [
+    {
+      "id": "forward_test",
+      "name": "forward threshold test",
+      "action": "move",
+      "speed": 0.22,
+      "duration_s": 1.5
+    },
+    {
+      "id": "settle_before_turn",
+      "name": "settle before turn",
+      "action": "inspect",
+      "duration_s": 0.8
+    },
+    {
+      "id": "turn_test",
+      "name": "right turn threshold test",
+      "action": "turn",
+      "direction": "right",
+      "speed": 0.35,
+      "duration_s": 1.6
+    },
+    {
+      "id": "stop_after_turn",
+      "name": "stop after turn",
+      "action": "inspect",
+      "duration_s": 0.8
+    }
+  ]
+}

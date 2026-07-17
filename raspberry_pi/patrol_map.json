@@ -1,0 +1,105 @@
+{
+  "name": "industrial-square-patrol-v1",
+  "description": "Timing-based patrol brain for an approximately 40 m2 square site. Tune forward durations after measuring real floor distance.",
+  "area_m2": 40,
+  "default_speed": 0.24,
+  "default_turn_speed": 0.5,
+  "default_loops": 1,
+  "notes": [
+    "WAVE ROVER has no wheel encoders, so this map is a timed action plan instead of strict SLAM localization.",
+    "The 90 degree turns use two measured 45 degree turn units; adjust duration_s if the floor grip or battery changes.",
+    "Use /auto/map?loops=1&speed_scale=0.7 for the first physical test after turn calibration."
+  ],
+  "waypoints": [
+    { "id": "A", "name": "Start / charging side", "x_m": 0.0, "y_m": 0.0 },
+    { "id": "B", "name": "North inspection point", "x_m": 6.3, "y_m": 0.0 },
+    { "id": "C", "name": "East inspection point", "x_m": 6.3, "y_m": 6.3 },
+    { "id": "D", "name": "South inspection point", "x_m": 0.0, "y_m": 6.3 }
+  ],
+  "steps": [
+    {
+      "id": "A_to_B",
+      "name": "巡检边 A 到 B",
+      "action": "move",
+      "speed": 0.24,
+      "duration_s": 5.0
+    },
+    {
+      "id": "inspect_B",
+      "name": "B 点环境采集",
+      "action": "inspect",
+      "duration_s": 0.8
+    },
+    {
+      "id": "turn_B",
+      "name": "B 点右转 90 度",
+      "action": "turn",
+      "direction": "right",
+      "speed": 0.5,
+      "duration_s": 0.8
+    },
+    {
+      "id": "B_to_C",
+      "name": "巡检边 B 到 C",
+      "action": "move",
+      "speed": 0.24,
+      "duration_s": 5.0
+    },
+    {
+      "id": "inspect_C",
+      "name": "C 点环境采集",
+      "action": "inspect",
+      "duration_s": 0.8
+    },
+    {
+      "id": "turn_C",
+      "name": "C 点右转 90 度",
+      "action": "turn",
+      "direction": "right",
+      "speed": 0.5,
+      "duration_s": 0.8
+    },
+    {
+      "id": "C_to_D",
+      "name": "巡检边 C 到 D",
+      "action": "move",
+      "speed": 0.24,
+      "duration_s": 5.0
+    },
+    {
+      "id": "inspect_D",
+      "name": "D 点环境采集",
+      "action": "inspect",
+      "duration_s": 0.8
+    },
+    {
+      "id": "turn_D",
+      "name": "D 点右转 90 度",
+      "action": "turn",
+      "direction": "right",
+      "speed": 0.5,
+      "duration_s": 0.8
+    },
+    {
+      "id": "D_to_A",
+      "name": "巡检边 D 回到 A",
+      "action": "move",
+      "speed": 0.24,
+      "duration_s": 5.0
+    },
+    {
+      "id": "inspect_A",
+      "name": "A 点回站确认",
+      "action": "inspect",
+      "duration_s": 1.0
+    },
+    {
+      "id": "turn_A",
+      "name": "A 点右转恢复起始朝向",
+      "action": "turn",
+      "direction": "right",
+      "speed": 0.5,
+      "duration_s": 0.8
+    }
+  ]
+}

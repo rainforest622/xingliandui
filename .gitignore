@@ -1,35 +1,25 @@
-# OS / editor
-.DS_Store
-Thumbs.db
-.idea/
-.vscode/
-*.log
-
-# HarmonyOS / DevEco build outputs
-.hvigor/
-oh_modules/
-build/
-**/build/
-**/.preview/
-**/.cxx/
-
-# Native / SDK build outputs
-out/
-output/
-*.elf
-*.map
-*.bin
-
-# Python helper caches
 __pycache__/
 *.py[cod]
 .pytest_cache/
-
-# Local temporary files
+.venv/
+venv/
+*.log
+output/
+build/
 tmp/
-temp/
-*.zip
+*.user
+*.bak
 
-# Keep these verified demo artifacts tracked on purpose.
-!firmware/prebuilt/*.fwpkg
-!mobile/prebuilt/*.hap
+# Local generated artifacts and large handoff bundles.
+artifacts/
+.agents/
+.hvigor/
+.idea/
+
+# Local device dumps/screenshots generated during HDC debugging.
+nearlink_layout*.json
+nearlink_screen.png
+
+# Packaged historical workspace snapshots should not be committed again.
+*.zip
+*.rar

@@ -1,11 +1,16 @@
-# WS63 MVP 基线与工程化工作流
+﻿# WS63 MVP 基线与工程化工作流
 
-本文件是当前项目的唯一权威交接文档。
+本文件保留项目早期到 2026-07-04 的工程基线和历史验收记录。
 
-- 日期基线：2026-06-30
+> 当前执行主线已在 2026-07-17 更新为“手机端导入路线 + 树莓派 MapBrain 巡航 + WS63 星闪安全控制 + 超声波智能避障”的工业巡检机器人。最新方向以 `docs/ARCHITECTURE_DIRECTION.md`、`docs/FINAL_GOAL_ROADMAP.md` 和根目录 `README.md` 为准；本文中关于 `D:\w\src`、旧电机板直驱包、R16/R17 焊接、H5 串口、巡检点识别的内容只作为历史记录。
+
+- 日期基线：2026-07-04，当前方向覆盖：2026-07-17
 - 当前实板通信口：`COM5`
-- 当前实板协议层：`AT over UART0`
-- 当前最终可烧录源码主线：`D:\w\src\application\samples\peripheral\robot_mvp`
+- 当前控制原则：数据走 Wi-Fi，控制走星闪 SLE
+- 当前底盘链路：`WS63 Type-C -> 树莓派 USB -> 树莓派安全仲裁/桥接 -> /dev/serial0 -> WAVE ROVER`
+- 当前最终目标：手机端路线导入、树莓派自动巡航、WS63 超声波智能避障、物联网日志、星闪急停锁存
+- 当前构建底座：保留 `D:\r\src`，复制到 `D:\b\src` 后应用 overlay 构建
+- 当前推荐烧录包：`firmware\fwpkg\ws63-liteos-app_wave_rover_bridge_load_only.fwpkg`
 
 ## 1. 当前已实现功能
 
@@ -15,10 +20,9 @@
 |---|---|---|---|
 | OLED 初始化与状态页显示 | `O` | `AT+ROBOTOLED` | 已验证 |
 | AHT20 温湿度读取 | `E` | `AT+ROBOTENV` | 已验证 |
-| 前向距离/避障接口 | `D` | `AT+ROBOTOBS` | HC-SR04 已启用，待实板距离验收 |
-| 智能避障自动行驶 | `A` | `AT+ROBOTAVOID` | 已实现，待实板避障验收 |
-| 模拟避障状态机测试 | `X` | `AT+ROBOTAVOIDTEST` | 已验证（离地实测通过） |
-| SLE/星闪控制服务 | SLE 写入 `F/B/L/R/S/I/O/E/D/A/X/T` | service=`0x7100` | 已烧录并确认广播启动，待 central 扫描/连接实测 |
+| 前向距离/避障接口 | `D` | `AT+ROBOTOBS` | HC-SR04 真实外设已接入，待距离实测记录 |
+| 智能避障自动行驶 | `A` | `AT+ROBOTAVOID` | 已实现真实超声波链路，待场地避障验收 |
+| SLE/星闪控制服务 | SLE 写入 `F/B/L/R/S/I/O/E/D/A/T` | service=`0x7100` | 已烧录并确认广播启动，待 central 扫描/连接实测 |
 | 状态遥测 | `T` | `AT+ROBOTST` | 已验证 |
 | 电机层初始化 | `I` | `AT+ROBOTMI` | 已验证 |
 | 前进 | `F` | `AT+ROBOTF` | 已验证 |
@@ -42,12 +46,11 @@ O,E,T,I,T,F,S,T,B,S,T,L,S,T,R,S,E,T,S
 
 最终保留的验证记录：
 
-- `D:\aaa嵌入式比赛\artifacts\mvp_env_full_after_reset.csv`
-- `D:\aaa嵌入式比赛\artifacts\ws63-liteos-app_mvp_env_load_only.fwpkg`
-- `D:\aaa嵌入式比赛\artifacts\ws63-liteos-app_mvp_obstacle_stub_load_only.fwpkg`
-- `D:\aaa嵌入式比赛\artifacts\ws63-liteos-app_mvp_smart_obstacle_known_loader_load_only.fwpkg`
-- `D:\aaa嵌入式比赛\artifacts\ws63-liteos-app_mvp_avoid_test_known_loader_load_only.fwpkg`
-- `D:\aaa嵌入式比赛\artifacts\ws63-liteos-app_mvp_sle_bridge_sdk_load_only_boot_verified.fwpkg`（已烧录，COM5 日志确认 SLE server/announce 启动）
+- `D:\WS63_NearLink_Robot_MVP\artifacts\mvp_env_full_after_reset.csv`
+- `D:\WS63_NearLink_Robot_MVP\artifacts\ws63-liteos-app_mvp_env_load_only.fwpkg`
+- `D:\WS63_NearLink_Robot_MVP\artifacts\ws63-liteos-app_mvp_smart_obstacle_known_loader_load_only.fwpkg`
+- `D:\WS63_NearLink_Robot_MVP\artifacts\ws63-liteos-app_mvp_sle_bridge_sdk_load_only_boot_verified.fwpkg`（已烧录，COM5 日志确认 SLE server/announce 启动）
+- `D:\WS63_NearLink_Robot_MVP\artifacts\ws63-liteos-app_mvp_real_hcsr04_load_only.fwpkg`（2026-07-04：真实 HC-SR04，已移除模拟 `X`）
 
 2026-06-30 智能避障开发状态：
 
@@ -56,25 +59,34 @@ O,E,T,I,T,F,S,T,B,S,T,L,S,T,R,S,E,T,S
 - `S` / `AT+ROBOTS` 会退出自动避障并停车
 - 若距离采样无效，自动避障会 fail-safe 停车并退出
 - 电机层仍保持当前实测可用的 `0x5A`，不按 pinout 中 U13 `0x15` 修改
-- 新增 `AT+ROBOTAVOIDTEST` / 上位机 `X`：不依赖真实超声波，模拟一次 120 mm 障碍，再模拟 450 mm 安全距离；会真实驱动电机，约 1800 ms 后自动停车
 - 烧录注意：直接烧新生成的 `ws63-liteos-app_load_only.fwpkg` 曾在 root loader 后第二阶段超时；已使用历史已知可用 loader + 新 app 重新打包为 `ws63-liteos-app_mvp_smart_obstacle_known_loader_load_only.fwpkg` 并烧录成功
 - 实板状态：`T` 正常，`A` 已注册；未初始化电机时 `A` 返回 `MOTOR_ERROR`，初始化后若 HC-SR04 无有效回波，`A` 返回 `OBSTACLE_STOP`、`phase=4` 且不运动
-- 2026-06-30 追加：`X` 已烧录并注册；未初始化电机时返回 `MOTOR_ERROR`、`test_ms=1800`；`I,T` 已确认 `ready=1`；用户离地实测 `I,X` 动作现象通过
+- 历史过渡：超声波模块到货前曾使用 `AT+ROBOTAVOIDTEST` / 上位机 `X` 做模拟避障状态机测试；真实 HC-SR04 接入后，当前版本已删除该模拟入口。
+
+2026-07-04 真实超声波接入状态：
+
+- HC-SR04 外设已接入，当前板端代码不再包含模拟避障路径；`D` 和 `A` 均读取真实 TRIG/ECHO。
+- `robot_obstacle.c` 已增加 ECHO 空闲检测、近/远距离限幅、64 位距离换算和 `reason` 诊断字段；异常回波继续按 fail-safe 停车处理。
+- 2026-07-06 新版诊断固件已烧录成功；旧状态曾为 `reason=2/echo_idle_high`，加入 ECHO 输入下拉并重新烧录后，`AT+GETIOMODE=1` 显示 pull=1，当前 `D` 返回 `reason=3/no_echo_rise`。
+- 当前判断：ECHO 不再是单纯空闲常高，模块仍未对 TRIG 产生回波；现场照片显示超声波模块直插较松，优先修复连接可靠性、供电、TRIG/ECHO 顺序和 ECHO 电平转换。
+- 已新增只读测距验收脚本 `D:\WS63_NearLink_Robot_MVP\scripts\verify_ultrasonic_distance.py`，只发送 `AT+ROBOTOBS`，不会启动电机。当前接好模块后连续采样仍为 `no_echo_rise`，说明 TRIG 输出正常但模块未产生 ECHO 脉冲。
+- 旧固件/旧状态下 `I,A,S,T` 已验证 fail-safe：`A` 返回 `OBSTACLE_STOP`、`moving=0`、`phase=4`、`reason=2/echo_idle_high`，不会误动车。当前 `reason=3` 下暂不主动跑 `I,A`，避免模块突然接触恢复后小车进入自动运动。
+- 当前验收重点从“状态机能跑”转为“真实距离值稳定、障碍触发阈值正确、`A` 模式遇障后能安全后退/右转/继续前进”。
 
 2026-06-30 下一阶段：SLE/星闪控制链路准备状态：
 
 - 当前仍以 `COM5` 的 `AT over UART0` 为实板验收主链路，不破坏已验证功能
 - 已新增板端控制抽象接口 `D:\w\src\application\samples\peripheral\robot_mvp\robot_mvp_control.h`
-- `F/B/L/R/S/I/O/E/D/A/X/T` 对应的 AT 处理函数已改为调用 `robot_mvp_control_*`，为未来 SLE write callback 复用同一套底盘逻辑预留入口
+- `F/B/L/R/S/I/O/E/D/A/T` 对应的 AT 处理函数已改为调用 `robot_mvp_control_*`，为未来 SLE write callback 复用同一套底盘逻辑预留入口
 - 已新增并接入板端 SLE server：`D:\w\src\application\samples\peripheral\robot_mvp\robot_sle_server.c`
 - SLE 启动路径：`robot_task()` 调用 `robot_sle_server_start()`；广播名 `ws63_robot_mvp`，service `0x7100`，command `0x7101`，response/read+notify `0x7102`
 - SLE write callback 只入队，不直接做 I2C/OLED/AHT20/电机动作；`RobotSle` 工作线程执行命令后 notify，避免阻塞 SLE service 线程
 - 已修复 `conn_id=0` 也可能是合法连接的问题，notify 不再把 `conn_id==0` 当作无效
-- 已新增上位机 profile 入口 `D:\aaa嵌入式比赛\upper_client\robot_profile.py`，未来 SLE central 复用 `encode_sle_ascii_command()`
+- 已新增上位机 profile 入口 `D:\WS63_NearLink_Robot_MVP\upper_client\robot_profile.py`，未来 SLE central 复用 `encode_sle_ascii_command()`
 - SDK 官方可参考样例为 `D:\w\src\application\samples\bt\sle\sle_speed_server`；它是吞吐样例，不是机器人控制样例，接入时应只借用 SLE 广播/连接/SSAP 属性框架
-- SLE 控制协议草案见 `D:\aaa嵌入式比赛\protocol_docs\sle_control_profile.md`
-- 本次重构后已验证：`python -m unittest discover -s D:\aaa嵌入式比赛\tests -v` 通过 `21 tests OK`；`python build.py ws63-liteos-app` 编译成功
-- 当前 SLE 调试包：`D:\aaa嵌入式比赛\artifacts\ws63-liteos-app_mvp_sle_bridge_sdk_load_only_boot_verified.fwpkg`
+- SLE 控制协议草案见 `D:\WS63_NearLink_Robot_MVP\protocol_docs\sle_control_profile.md`
+- SLE bridge 重构时已验证：`python -m unittest discover -s D:\WS63_NearLink_Robot_MVP\tests -v` 通过；`python build.py ws63-liteos-app` 编译成功。真实超声波版本移除模拟 `X` 并加入 `reason` 诊断字段后，当前软件测试基线为 `22 tests OK`。
+- 当前 SLE 调试包：`D:\WS63_NearLink_Robot_MVP\artifacts\ws63-liteos-app_mvp_sle_bridge_sdk_load_only_boot_verified.fwpkg`
 - 2026-06-30 实测：`known_loader...unverified.fwpkg` 第一阶段 loader 下载成功后第二阶段 `Ack receiving timeout`，已删除该失败包；改烧 SDK 标准输出 `D:\w\src\output\ws63\fwpkg\ws63-liteos-app\ws63-liteos-app_load_only.fwpkg` 成功
 - 2026-06-30 实测启动日志已确认：`ROBOT SLE enable status=0x0`、`ROBOT SLE add service ret=0x0`、`ROBOT SLE adv ret=0x0 name=ws63_robot_mvp`、`ROBOT_MVP READY protocol=at/sle ...`
 - 烧录后 AT 回归：`T` 返回 OK，RTT 约 `14 ms`
@@ -88,13 +100,13 @@ O,E,T,I,T,F,S,T,B,S,T,L,S,T,R,S,E,T,S
 | `D:\w\src\application\samples\peripheral\robot_mvp` | 实板固件源码 | 是 | 真实烧录、真实调试、真实功能修改都在这里完成；`robot_mvp_control.h` 是后续 SLE/其他传输层复用入口 |
 | `D:\w\src\output\ws63\acore\ws63-liteos-app` | 编译输出 | 是 | `elf/bin/map` 等构建产物 |
 | `D:\w\src\output\ws63\fwpkg\ws63-liteos-app` | SDK 打包输出 | 是 | 烧录包目录 |
-| `D:\aaa嵌入式比赛\upper_client` | 上位机串口/TCP 客户端 | 是 | 命令发送、ACK 解析、CSV 输出 |
-| `D:\aaa嵌入式比赛\tests` | 自动化测试 | 是 | Python 单测与 C 核心测试 |
-| `D:\aaa嵌入式比赛\scripts` | 演示脚本 | 是 | 一键串口验收脚本 |
-| `D:\aaa嵌入式比赛\protocol_docs` | 协议文档 | 是 | AT 协议和保留二进制协议说明 |
-| `D:\aaa嵌入式比赛\docs` | 交接/流程/历史说明 | 是 | 先读本文件 |
-| `D:\aaa嵌入式比赛\artifacts` | 最终保留产物 | 是 | 仅保留可复现实验结果 |
-| `D:\aaa嵌入式比赛\ws63_liteos` | 参考实现镜像 | 否 | 用于说明 AT/AHT20 可移植实现，不是当前烧录主线 |
+| `D:\WS63_NearLink_Robot_MVP\upper_client` | 上位机串口/TCP 客户端 | 是 | 命令发送、ACK 解析、CSV 输出 |
+| `D:\WS63_NearLink_Robot_MVP\tests` | 自动化测试 | 是 | Python 单测与 C 核心测试 |
+| `D:\WS63_NearLink_Robot_MVP\scripts` | 演示脚本 | 是 | 一键串口验收脚本 |
+| `D:\WS63_NearLink_Robot_MVP\protocol_docs` | 协议文档 | 是 | AT 协议和保留二进制协议说明 |
+| `D:\WS63_NearLink_Robot_MVP\docs` | 交接/流程/历史说明 | 是 | 先读本文件 |
+| `D:\WS63_NearLink_Robot_MVP\artifacts` | 最终保留产物 | 是 | 仅保留可复现实验结果 |
+| `D:\WS63_NearLink_Robot_MVP\ws63_liteos` | 参考实现镜像 | 否 | 用于说明 AT/AHT20 可移植实现，不是当前烧录主线 |
 | `D:\fbb_ws63` | 临时 SDK 工作树 | 否 | 已清理为干净状态，不再作为当前开发主线 |
 
 严格规则：
@@ -109,7 +121,7 @@ O,E,T,I,T,F,S,T,B,S,T,L,S,T,R,S,E,T,S
 工作区根目录保留以下结构：
 
 ```text
-D:\aaa嵌入式比赛
+D:\WS63_NearLink_Robot_MVP
 ├─ artifacts        最终保留的固件与验收 CSV
 ├─ docs             权威交接文档与历史说明
 ├─ protocol_docs    协议定义
@@ -167,10 +179,16 @@ python D:\w\src\tools\pkg\packet.py ws63 ws63-liteos-app ' '
 D:\HiSpark Studio 26.03.1\tools\BurnToolCmd\BurnToolCmd.exe --burn -n ws63 -m serial COM5 --baudRate 115200 -f D:\w\src\output\ws63\fwpkg\ws63-liteos-app\ws63-liteos-app_load_only.fwpkg
 ```
 
+当前真实 HC-SR04 版本归档包：
+
+```powershell
+D:\HiSpark Studio 26.03.1\tools\BurnToolCmd\BurnToolCmd.exe --burn -n ws63 -m serial COM5 --baudRate 115200 -f D:\WS63_NearLink_Robot_MVP\artifacts\ws63-liteos-app_mvp_real_hcsr04_load_only.fwpkg
+```
+
 当前 SLE bridge 调试包（已烧录并确认 SLE announce 启动，待 central 扫描/连接验证）：
 
 ```powershell
-D:\HiSpark Studio 26.03.1\tools\BurnToolCmd\BurnToolCmd.exe --burn -n ws63 -m serial COM5 --baudRate 115200 -f D:\aaa嵌入式比赛\artifacts\ws63-liteos-app_mvp_sle_bridge_sdk_load_only_boot_verified.fwpkg
+D:\HiSpark Studio 26.03.1\tools\BurnToolCmd\BurnToolCmd.exe --burn -n ws63 -m serial COM5 --baudRate 115200 -f D:\WS63_NearLink_Robot_MVP\artifacts\ws63-liteos-app_mvp_sle_bridge_sdk_load_only_boot_verified.fwpkg
 ```
 
 烧录注意事项：
@@ -192,14 +210,10 @@ python -m upper_client.robot_client --transport serial-at --serial-port COM5 --c
 智能避障联调命令：
 
 ```powershell
-python -m upper_client.robot_client --transport serial-at --serial-port COM5 --commands I,D,A,S,T --interval 0.8 --timeout 3
+python -m upper_client.robot_client --transport serial-at --serial-port COM5 --commands D,D,I,A,S,T --interval 0.8 --timeout 3
 ```
 
-无超声波模块时的模拟避障测试：
-
-```powershell
-python -m upper_client.robot_client --transport serial-at --serial-port COM5 --commands I,X,T,S,T --interval 0.8 --timeout 3
-```
+说明：前两个 `D` 用于观察真实距离是否稳定；`A` 会进入持续自动避障动作，必须在安全场地、车轮离地或低风险环境中执行，并随时准备 `S` 或断电。
 
 SLE bridge 烧录后的串口日志烟雾检查：
 
@@ -215,7 +229,7 @@ ROBOT SLE adv ret=0x0 name=ws63_robot_mvp
 一键演示脚本：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File D:\aaa嵌入式比赛\scripts\run_mvp_demo.ps1 -Port COM5
+powershell -ExecutionPolicy Bypass -File D:\WS63_NearLink_Robot_MVP\scripts\run_mvp_demo.ps1 -Port COM5
 ```
 
 串口实板规则：
@@ -231,10 +245,10 @@ powershell -ExecutionPolicy Bypass -File D:\aaa嵌入式比赛\scripts\run_mvp_d
 ### 5.1 纯软件回归
 
 ```powershell
-python -m unittest discover -s D:\aaa嵌入式比赛\tests -v
+python -m unittest discover -s D:\WS63_NearLink_Robot_MVP\tests -v
 ```
 
-当前基线结果：`21 tests OK`
+当前基线结果：真实超声波版本移除模拟 `X` 用例并加入 `reason` 诊断字段后为 `22 tests OK`
 
 ### 5.2 实板烟雾测试
 
@@ -261,22 +275,22 @@ O,E,D,T,I,T,F,S,T,B,S,T,L,S,T,R,S,E,D,T,S
 - 车轮离地后再做首轮动作测试
 - 上位机已关闭 `DTR/RTS`，尽量减少串口打开时对板端的扰动
 - 当前真实协议是 `AT over UART0`，不要把保留的二进制协议直接拿去打实板串口
-- `X` / `AT+ROBOTAVOIDTEST` 是真实电机动作测试，不是纯软件空跑；首次运行必须车轮离地
+- 当前版本已移除 `X` / `AT+ROBOTAVOIDTEST` 模拟避障入口；不要再按旧文档或旧包发送该命令
 - AHT20、OLED、PWM 发生器共享 I2C，总线初始化顺序和复用要谨慎
 - OLED 初始化和刷新会显著拉高 RTT，属于正常现象
 - 温湿度功能已通，不要再把 “AHT20 未接通” 当作当前问题
 - `HiSparkEP_2025-02-10_pinout.md` 标注超声波为 TRIG=`GPIO_00`、ECHO=`GPIO_01`；当前 HC-SR04 驱动已启用，若现场模块 ECHO 为 5V，必须确认底板已有电平转换或增加 3.3V 保护
-- `HiSparkEP_2025-02-10_pinout.md` 标注 PWM 控制器 U13 地址为 7-bit `0x15`，但当前实车电机层使用 `0x5A` 已验证可驱动；除非用 I2C scan 或官方电机协议确认，不要直接把 `dut_motor.c` 改成 `0x15`
+- `HiSparkEP_2025-02-10_pinout.md` 标注 PWM 控制器 U13 地址为 7-bit `0x15`，但当前实车电机层使用 `0x5A` 已验证可驱动；除非用 I2C scan 或官方电机协议确认，不要直接把 `robot_motor.c` 改成 `0x15`
 
 ## 7. 后续 AI 接手顺序
 
 后续任何 AI 或开发者进入项目时，必须按以下顺序读取：
 
-1. 本文件：`D:\aaa嵌入式比赛\docs\PROJECT_BASELINE_AND_WORKFLOW.md`
-2. 协议：`D:\aaa嵌入式比赛\protocol_docs\protocol_v1.md`
-3. SLE 映射草案：`D:\aaa嵌入式比赛\protocol_docs\sle_control_profile.md`
-4. 上位机入口：`D:\aaa嵌入式比赛\upper_client\robot_client.py`
-5. 自动化测试：`D:\aaa嵌入式比赛\tests`
+1. 本文件：`D:\WS63_NearLink_Robot_MVP\docs\PROJECT_BASELINE_AND_WORKFLOW.md`
+2. 协议：`D:\WS63_NearLink_Robot_MVP\protocol_docs\protocol_v1.md`
+3. SLE 映射草案：`D:\WS63_NearLink_Robot_MVP\protocol_docs\sle_control_profile.md`
+4. 上位机入口：`D:\WS63_NearLink_Robot_MVP\upper_client\robot_client.py`
+5. 自动化测试：`D:\WS63_NearLink_Robot_MVP\tests`
 6. 如需改实板行为，再进入 `D:\w\src\application\samples\peripheral\robot_mvp`
 
 禁止跳过第 1 步直接修改代码。

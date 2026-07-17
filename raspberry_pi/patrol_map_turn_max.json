@@ -1,0 +1,29 @@
+{
+  "name": "turn-max-calibration-v1",
+  "description": "Maximum short right-turn pulse to verify whether in-place differential turning works on the floor.",
+  "area_m2": 40,
+  "default_speed": 0.0,
+  "default_turn_speed": 0.5,
+  "default_loops": 1,
+  "notes": [
+    "This is a short calibration file only.",
+    "It sends L=0.5,R=-0.5 for 1.2 seconds, then stops.",
+    "If this does not visibly rotate the robot, check wheel direction mapping or floor traction."
+  ],
+  "steps": [
+    {
+      "id": "right_turn_max",
+      "name": "maximum right turn pulse",
+      "action": "turn",
+      "direction": "right",
+      "speed": 0.5,
+      "duration_s": 1.2
+    },
+    {
+      "id": "stop_after_turn",
+      "name": "stop after turn",
+      "action": "inspect",
+      "duration_s": 0.8
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "WS63 NearLink robot controller"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "Control the WS63 robot and view the Raspberry Pi camera"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "WS63 Robot"
+    }
+  ]
+}

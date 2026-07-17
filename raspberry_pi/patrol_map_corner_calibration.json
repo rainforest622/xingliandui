@@ -1,0 +1,54 @@
+{
+  "name": "corner-calibration-v1",
+  "description": "One-corner patrol calibration: forward, right turn, forward.",
+  "area_m2": 40,
+  "default_speed": 0.24,
+  "default_turn_speed": 0.5,
+  "default_loops": 1,
+  "notes": [
+    "Use this before the full square patrol.",
+    "It checks whether the robot can make one corner and continue along the new heading."
+  ],
+  "steps": [
+    {
+      "id": "forward_before_corner",
+      "name": "forward before corner",
+      "action": "move",
+      "speed": 0.24,
+      "duration_s": 2.0
+    },
+    {
+      "id": "settle_before_corner",
+      "name": "settle before corner",
+      "action": "inspect",
+      "duration_s": 0.6
+    },
+    {
+      "id": "right_corner",
+      "name": "right corner",
+      "action": "turn",
+      "direction": "right",
+      "speed": 0.5,
+      "duration_s": 1.2
+    },
+    {
+      "id": "settle_after_corner",
+      "name": "settle after corner",
+      "action": "inspect",
+      "duration_s": 0.6
+    },
+    {
+      "id": "forward_after_corner",
+      "name": "forward after corner",
+      "action": "move",
+      "speed": 0.24,
+      "duration_s": 2.0
+    },
+    {
+      "id": "stop_after_corner",
+      "name": "stop after corner",
+      "action": "inspect",
+      "duration_s": 0.8
+    }
+  ]
+}
