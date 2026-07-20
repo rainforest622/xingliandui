@@ -201,6 +201,27 @@ curl http://127.0.0.1:8090/auto/stop
 The arbiter starts in `manual` mode, so it will not begin auto patrol on boot.
 Test auto patrol only on an open floor, starting with low speed.
 
+### Live Voice Telemetry
+
+`nearlink-voice.service` is the only writer to the ASRPRO UART. A request for
+temperature/humidity or front distance is answered from the latest WS63
+`+ROBOT:MON` snapshot rather than from a fixed speech sentence. The Pi sends a
+checksummed binary frame to ASRPRO; the local ASRPRO model combines generated
+number clips and speaks the real value. The mobile inspection panel also reads
+`http://<pi>:8090/voice/latest`, so it displays the same data even when the
+manual SLE inspection switch is off.
+
+After updating the Pi scripts, restart both services:
+
+```bash
+sudo systemctl restart nearlink-rover-arbiter nearlink-voice
+curl http://127.0.0.1:8090/voice/latest
+```
+
+The ASRPRO 2M speech model must include the dynamic prompt directives in
+`asrpro/robot_voice_control_pro.ino`; compile/download that source again after
+changing the prompt list.
+
 After the camera `/healthz` endpoint is healthy, a first visual line-following
 mode is available. It reads the local MJPEG stream, detects yellow track tape
 in the lower half of the frame, and stops if the line is lost:
@@ -303,3 +324,54 @@ Minimum route JSON:
 
 Supported actions are `move`, `turn`, `wait`, `inspect`, `stop`, and `pause`.
 The import API validates the route and saves it as `active_route.json`.
+
+## Offline Voice and Acoustic Events
+
+`voice_service.py` adds a safe voice gateway on top of the normal safety
+arbiter. The included ASRPRO firmware at `asrpro/robot_voice_control.ino`
+recognises a fixed offline vocabulary and sends one-byte events at 9600 bps.
+The service also accepts recognised text/sound-event messages from a generic
+UART module, or runs local microphone recognition with Silero VAD plus
+quantised SenseVoice. Voice requests are allow-listed and are sent to
+`POST /voice/intent`; they never write motor JSON. SLE manual control and
+emergency-stop precedence remain unchanged.
+
+Install the offline runtime and service:
+
+```bash
+cd /home/xinglian/raspberry_pi
+chmod +x install_voice_runtime.sh install_voice_service.sh
+./install_voice_runtime.sh
+VOICE_MODE=serial VOICE_SERIAL_PORT=/dev/nearlink-asr VOICE_BAUDRATE=9600 \
+  VOICE_SERIAL_PROTOCOL=asrpro-byte ./install_voice_service.sh
+```
+
+For a Linux microphone instead of a UART recognition board:
+
+```bash
+VOICE_MODE=microphone ./install_voice_service.sh
+```
+
+See [`../docs/SOUND_MODULE_IMPLEMENTATION.md`](../docs/SOUND_MODULE_IMPLEMENTATION.md)
+for the supported UART formats, command vocabulary, model source, safety
+rules, and validation sequence.
+
+## Voice Patrol Assistant
+
+The deployed ASRPRO image now supports start, pause, resume, stop, status,
+environment, distance, patrol-progress, and battery queries. The query bytes
+are safety-arbitrated by the Pi and never turn into direct motor JSON. WS63
+publishes a compact `+ROBOT:MON` monitor frame every five seconds and whenever
+alarm flags change; the Pi converts obstacle, high-temperature (35.0 C), and
+high-humidity (85.0 %RH) conditions to de-duplicated ASRPRO prompts.
+
+Useful endpoints:
+
+```text
+/status                 complete arbiter, voice, and latest WS63 telemetry
+/voice/latest           non-consuming voice/telemetry diagnostic summary
+/voice/announcements    consumed only by nearlink-voice.service
+```
+
+The ASRPRO reply codes and Tianwen Block project update are documented in
+[`../docs/VOICE_PATROL_ASSISTANT.md`](../docs/VOICE_PATROL_ASSISTANT.md).

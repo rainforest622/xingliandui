@@ -7,7 +7,8 @@
   "default_loops": 1,
   "notes": [
     "WAVE ROVER has no wheel encoders, so this map is a timed action plan instead of strict SLAM localization.",
-    "The 90 degree turns use two measured 45 degree turn units; adjust duration_s if the floor grip or battery changes.",
+    "Distance unit: metres (m). Move time is 2.80 s/m at L=R=0.24.",
+    "The 90 degree turns use the measured 686 ms right-turn parameter; recalibrate only after floor grip or battery changes.",
     "Use /auto/map?loops=1&speed_scale=0.7 for the first physical test after turn calibration."
   ],
   "waypoints": [
@@ -16,13 +17,25 @@
     { "id": "C", "name": "East inspection point", "x_m": 6.3, "y_m": 6.3 },
     { "id": "D", "name": "South inspection point", "x_m": 0.0, "y_m": 6.3 }
   ],
+  "calibration": {
+    "distance_unit": "m",
+    "time_unit": "s",
+    "turn_time_unit": "ms",
+    "baseline_command_speed": 100,
+    "linear_left": 0.24,
+    "linear_right": 0.24,
+    "seconds_per_meter": 2.8,
+    "turn_left": 0.5,
+    "turn_right": -0.5,
+    "ninety_degree_turn_ms": 686
+  },
   "steps": [
     {
       "id": "A_to_B",
       "name": "巡检边 A 到 B",
       "action": "move",
       "speed": 0.24,
-      "duration_s": 5.0
+      "duration_s": 17.64
     },
     {
       "id": "inspect_B",
@@ -36,14 +49,14 @@
       "action": "turn",
       "direction": "right",
       "speed": 0.5,
-      "duration_s": 0.8
+      "duration_s": 0.686
     },
     {
       "id": "B_to_C",
       "name": "巡检边 B 到 C",
       "action": "move",
       "speed": 0.24,
-      "duration_s": 5.0
+      "duration_s": 17.64
     },
     {
       "id": "inspect_C",
@@ -57,14 +70,14 @@
       "action": "turn",
       "direction": "right",
       "speed": 0.5,
-      "duration_s": 0.8
+      "duration_s": 0.686
     },
     {
       "id": "C_to_D",
       "name": "巡检边 C 到 D",
       "action": "move",
       "speed": 0.24,
-      "duration_s": 5.0
+      "duration_s": 17.64
     },
     {
       "id": "inspect_D",
@@ -78,14 +91,14 @@
       "action": "turn",
       "direction": "right",
       "speed": 0.5,
-      "duration_s": 0.8
+      "duration_s": 0.686
     },
     {
       "id": "D_to_A",
       "name": "巡检边 D 回到 A",
       "action": "move",
       "speed": 0.24,
-      "duration_s": 5.0
+      "duration_s": 17.64
     },
     {
       "id": "inspect_A",
@@ -99,7 +112,7 @@
       "action": "turn",
       "direction": "right",
       "speed": 0.5,
-      "duration_s": 0.8
+      "duration_s": 0.686
     }
   ]
 }

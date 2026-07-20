@@ -11,7 +11,9 @@ fi
 APP_USER="${APP_USER:-${DEFAULT_APP_USER}}"
 APP_HOME="${APP_HOME:-$(getent passwd "$APP_USER" | cut -d: -f6)}"
 PYTHON_BIN="${PYTHON_BIN:-$(command -v python3)}"
-WS63_PORT="${WS63_PORT:-auto}"
+# The ASRPRO and WS63 enumerate as CH340 devices, so auto-detection cannot
+# safely distinguish them. install_serial_aliases.sh creates this stable alias.
+WS63_PORT="${WS63_PORT:-/dev/nearlink-ws63}"
 ROVER_PORT="${ROVER_PORT:-auto}"
 HTTP_HOST="${HTTP_HOST:-0.0.0.0}"
 HTTP_PORT="${HTTP_PORT:-8090}"
@@ -25,6 +27,9 @@ VISION_GAIN="${VISION_GAIN:-0.14}"
 VISION_MIN_AREA="${VISION_MIN_AREA:-600}"
 VISION_COLOR="${VISION_COLOR:-yellow}"
 MAP_PATH="${MAP_PATH:-$APP_DIR/patrol_map.json}"
+AVOID_EMERGENCY_MM="${AVOID_EMERGENCY_MM:-120}"
+AVOID_BLOCK_MM="${AVOID_BLOCK_MM:-280}"
+AVOID_CAUTION_MM="${AVOID_CAUTION_MM:-380}"
 SERVICE="/etc/systemd/system/${SERVICE_NAME}.service"
 
 sudo tee "$SERVICE" >/dev/null <<EOF
@@ -38,7 +43,7 @@ User=${APP_USER}
 WorkingDirectory=$APP_DIR
 Environment=HOME=${APP_HOME}
 Environment=PYTHONUNBUFFERED=1
-ExecStart=${PYTHON_BIN} $APP_DIR/rover_arbiter.py --ws63-port ${WS63_PORT} --rover-port ${ROVER_PORT} --http-host ${HTTP_HOST} --http-port ${HTTP_PORT} --auto-speed ${AUTO_SPEED} --turn-speed ${TURN_SPEED} --square-forward ${SQUARE_FORWARD} --square-turn ${SQUARE_TURN} --camera-stream-url ${CAMERA_STREAM_URL} --vision-speed ${VISION_SPEED} --vision-gain ${VISION_GAIN} --vision-min-area ${VISION_MIN_AREA} --vision-color ${VISION_COLOR} --map-path ${MAP_PATH}
+ExecStart=${PYTHON_BIN} $APP_DIR/rover_arbiter.py --ws63-port ${WS63_PORT} --rover-port ${ROVER_PORT} --http-host ${HTTP_HOST} --http-port ${HTTP_PORT} --auto-speed ${AUTO_SPEED} --turn-speed ${TURN_SPEED} --square-forward ${SQUARE_FORWARD} --square-turn ${SQUARE_TURN} --camera-stream-url ${CAMERA_STREAM_URL} --vision-speed ${VISION_SPEED} --vision-gain ${VISION_GAIN} --vision-min-area ${VISION_MIN_AREA} --vision-color ${VISION_COLOR} --map-path ${MAP_PATH} --avoid-emergency-mm ${AVOID_EMERGENCY_MM} --avoid-block-mm ${AVOID_BLOCK_MM} --avoid-caution-mm ${AVOID_CAUTION_MM}
 Restart=always
 RestartSec=2
 

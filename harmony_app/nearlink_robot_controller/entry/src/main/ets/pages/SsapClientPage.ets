@@ -9,7 +9,10 @@ import { scan, ssap, constant } from '@kit.NearLinkKit';
 import { PromptAction } from '@kit.ArkUI'
 import { webview } from '@kit.ArkWeb';
 import { http } from '@kit.NetworkKit';
+import { photoAccessHelper } from '@kit.MediaLibraryKit';
+import { preferences } from '@kit.ArkData';
 import { registerRobotSafetyStop, unregisterRobotSafetyStop } from './RobotSafetyBus';
+import { RouteCalibrationModel, RouteImageRecognizer, RouteLegModel, RoutePlanModel, RoutePlanner, RoutePointModel } from './RoutePlanner';
 
 const ROBOT_DEVICE_NAME: string = 'ws63_robot_mvp';
 const DEFAULT_PI_BASE_URL: string = 'http://192.168.43.42:8080';
@@ -24,7 +27,8 @@ const DEFAULT_ROUTE_JSON_TEXT: string = `{
   "default_loops": 1,
   "notes": [
     "WAVE ROVER has no wheel encoders, so this map is a timed action plan instead of strict SLAM localization.",
-    "The 90 degree turns use the measured 0.8s right-turn parameter.",
+    "All distances use metres (m); move time uses 2.80 s/m at command speed 100 (L=R=0.24).",
+    "The 90 degree turns use the measured 686 ms right-turn parameter.",
     "Use speed_scale=0.8 for the first physical test after floor changes."
   ],
   "waypoints": [
@@ -34,18 +38,18 @@ const DEFAULT_ROUTE_JSON_TEXT: string = `{
     { "id": "D", "name": "South inspection point", "x_m": 0.0, "y_m": 6.3 }
   ],
   "steps": [
-    { "id": "A_to_B", "name": "巡检边 A 到 B", "action": "move", "speed": 0.24, "duration_s": 5.0 },
+    { "id": "A_to_B", "name": "巡检边 A 到 B", "action": "move", "speed": 0.24, "duration_s": 17.64 },
     { "id": "inspect_B", "name": "B 点环境采集", "action": "inspect", "duration_s": 0.8 },
-    { "id": "turn_B", "name": "B 点右转 90 度", "action": "turn", "direction": "right", "speed": 0.5, "duration_s": 0.8 },
-    { "id": "B_to_C", "name": "巡检边 B 到 C", "action": "move", "speed": 0.24, "duration_s": 5.0 },
+    { "id": "turn_B", "name": "B 点右转 90 度", "action": "turn", "direction": "right", "speed": 0.5, "duration_s": 0.686 },
+    { "id": "B_to_C", "name": "巡检边 B 到 C", "action": "move", "speed": 0.24, "duration_s": 17.64 },
     { "id": "inspect_C", "name": "C 点环境采集", "action": "inspect", "duration_s": 0.8 },
-    { "id": "turn_C", "name": "C 点右转 90 度", "action": "turn", "direction": "right", "speed": 0.5, "duration_s": 0.8 },
-    { "id": "C_to_D", "name": "巡检边 C 到 D", "action": "move", "speed": 0.24, "duration_s": 5.0 },
+    { "id": "turn_C", "name": "C 点右转 90 度", "action": "turn", "direction": "right", "speed": 0.5, "duration_s": 0.686 },
+    { "id": "C_to_D", "name": "巡检边 C 到 D", "action": "move", "speed": 0.24, "duration_s": 17.64 },
     { "id": "inspect_D", "name": "D 点环境采集", "action": "inspect", "duration_s": 0.8 },
-    { "id": "turn_D", "name": "D 点右转 90 度", "action": "turn", "direction": "right", "speed": 0.5, "duration_s": 0.8 },
-    { "id": "D_to_A", "name": "巡检边 D 回到 A", "action": "move", "speed": 0.24, "duration_s": 5.0 },
+    { "id": "turn_D", "name": "D 点右转 90 度", "action": "turn", "direction": "right", "speed": 0.5, "duration_s": 0.686 },
+    { "id": "D_to_A", "name": "巡检边 D 回到 A", "action": "move", "speed": 0.24, "duration_s": 17.64 },
     { "id": "inspect_A", "name": "A 点回站确认", "action": "inspect", "duration_s": 1.0 },
-    { "id": "turn_A", "name": "A 点右转恢复起始朝向", "action": "turn", "direction": "right", "speed": 0.5, "duration_s": 0.8 }
+    { "id": "turn_A", "name": "A 点右转恢复起始朝向", "action": "turn", "direction": "right", "speed": 0.5, "duration_s": 0.686 }
   ]
 }`;
 const DEFAULT_ROUTE_JSON_TEXT_SAFE: string = `{
@@ -57,7 +61,8 @@ const DEFAULT_ROUTE_JSON_TEXT_SAFE: string = `{
   "default_loops": 1,
   "notes": [
     "WAVE ROVER has no wheel encoders, so this route is a timed action plan instead of strict SLAM localization.",
-    "The 90 degree turns use the measured 0.8s right-turn parameter.",
+    "All distances use metres (m); move time uses 2.80 s/m at command speed 100 (L=R=0.24).",
+    "The 90 degree turns use the measured 686 ms right-turn parameter.",
     "There are no inspect/wait/stop steps, so each edge naturally flows into the next turn."
   ],
   "waypoints": [
@@ -67,14 +72,14 @@ const DEFAULT_ROUTE_JSON_TEXT_SAFE: string = `{
     { "id": "D", "name": "South side", "x_m": 0.0, "y_m": 6.3 }
   ],
   "steps": [
-    { "id": "A_to_B", "name": "Patrol edge A to B", "action": "move", "speed": 0.24, "duration_s": 5.0 },
-    { "id": "turn_B", "name": "Turn right 90 degrees at B", "action": "turn", "direction": "right", "speed": 0.5, "duration_s": 0.8 },
-    { "id": "B_to_C", "name": "Patrol edge B to C", "action": "move", "speed": 0.24, "duration_s": 5.0 },
-    { "id": "turn_C", "name": "Turn right 90 degrees at C", "action": "turn", "direction": "right", "speed": 0.5, "duration_s": 0.8 },
-    { "id": "C_to_D", "name": "Patrol edge C to D", "action": "move", "speed": 0.24, "duration_s": 5.0 },
-    { "id": "turn_D", "name": "Turn right 90 degrees at D", "action": "turn", "direction": "right", "speed": 0.5, "duration_s": 0.8 },
-    { "id": "D_to_A", "name": "Patrol edge D back to A", "action": "move", "speed": 0.24, "duration_s": 5.0 },
-    { "id": "turn_A", "name": "Turn right to restore start heading", "action": "turn", "direction": "right", "speed": 0.5, "duration_s": 0.8 }
+    { "id": "A_to_B", "name": "Patrol edge A to B", "action": "move", "speed": 0.24, "duration_s": 17.64 },
+    { "id": "turn_B", "name": "Turn right 90 degrees at B", "action": "turn", "direction": "right", "speed": 0.5, "duration_s": 0.686 },
+    { "id": "B_to_C", "name": "Patrol edge B to C", "action": "move", "speed": 0.24, "duration_s": 17.64 },
+    { "id": "turn_C", "name": "Turn right 90 degrees at C", "action": "turn", "direction": "right", "speed": 0.5, "duration_s": 0.686 },
+    { "id": "C_to_D", "name": "Patrol edge C to D", "action": "move", "speed": 0.24, "duration_s": 17.64 },
+    { "id": "turn_D", "name": "Turn right 90 degrees at D", "action": "turn", "direction": "right", "speed": 0.5, "duration_s": 0.686 },
+    { "id": "D_to_A", "name": "Patrol edge D back to A", "action": "move", "speed": 0.24, "duration_s": 17.64 },
+    { "id": "turn_A", "name": "Turn right to restore start heading", "action": "turn", "direction": "right", "speed": 0.5, "duration_s": 0.686 }
   ]
 }`;
 const ROBOT_SERVICE_SHORT_UUID: string = '7100';
@@ -85,7 +90,10 @@ const ROBOT_SERVICE_DISCOVERY_RETRY_MS: number = 500;
 const ROBOT_MOTION_REPEAT_MS: number = 300;
 const CAMERA_STATUS_POLL_MS: number = 3000;
 const CAMERA_RELOAD_FAILURES: number = 2;
-const INSPECTION_POLL_MS: number = 1000;
+// One monitor request every 500 ms keeps the mobile display responsive while
+// avoiding the former back-to-back G/M polling pattern that could leave SLE
+// busy. WS63 itself samples the ultrasonic module every 100 ms.
+const INSPECTION_POLL_MS: number = 500;
 const ROBOT_MONITOR_ALARM_ENV_INVALID: number = 1;
 const ROBOT_MONITOR_ALARM_OBSTACLE_INVALID: number = 2;
 const ROBOT_MONITOR_ALARM_OBSTACLE_BLOCKED: number = 4;
@@ -94,6 +102,39 @@ const ROBOT_MONITOR_ALARM_HUMIDITY_HIGH: number = 16;
 const ROBOT_MONITOR_TEMP_HIGH_DECI_C: number = 350;
 const ROBOT_MONITOR_HUMIDITY_HIGH_DECI_PERCENT: number = 850;
 const PHONE_ENV_ALARM_REPEAT_MS: number = 5000;
+const ROUTE_CANVAS_DEFAULT_WIDTH: number = 320;
+const ROUTE_CANVAS_DEFAULT_HEIGHT: number = 240;
+const ROUTE_CANVAS_DEFAULT_ASPECT_RATIO: number = 4 / 3;
+const ROUTE_UPLOAD_GAP_MS: number = 420;
+const ROUTE_LIBRARY_PREFERENCES: string = 'robot_route_library';
+const ROUTE_LIBRARY_KEY: string = 'saved_routes_v1';
+const ROUTE_TOOL_SEGMENT: number = 0;
+const ROUTE_TOOL_EDIT: number = 1;
+const ROUTE_TOOL_LINE: number = 2;
+const ROUTE_TOOL_TRIANGLE: number = 3;
+const ROUTE_TOOL_RECTANGLE: number = 4;
+const ROUTE_TOOL_START: number = 5;
+const ROUTE_TOOL_END: number = 6;
+const ROUTE_DRAG_NONE: number = 0;
+const ROUTE_DRAG_VERTEX: number = 1;
+const ROUTE_DRAG_SHAPE: number = 2;
+const ROUTE_SHAPE_NONE: number = 0;
+const ROUTE_SHAPE_TRIANGLE: number = 1;
+const ROUTE_SHAPE_RECTANGLE: number = 2;
+
+interface SavedRouteEntry {
+  id: string;
+  name: string;
+  imageUri: string;
+  points: Array<RoutePointModel>;
+  lengthText: string;
+  speedText: string;
+  loopText: string;
+  secondsPerMeterText: string;
+  ninetyDegreeTurnMsText: string;
+  shapeKind?: number;
+  savedAt: string;
+}
 
 interface PiCameraStatusPayload {
   camera_backend?: string;
@@ -132,6 +173,19 @@ interface RouteWaypointDraft {
   y_m?: number;
 }
 
+interface RouteCalibrationDraft {
+  distance_unit: string;
+  time_unit: string;
+  turn_time_unit: string;
+  baseline_command_speed: number;
+  linear_left: number;
+  linear_right: number;
+  seconds_per_meter: number;
+  turn_left: number;
+  turn_right: number;
+  ninety_degree_turn_ms: number;
+}
+
 interface RouteImportPayload {
   name?: string;
   description?: string;
@@ -139,6 +193,7 @@ interface RouteImportPayload {
   default_speed?: number;
   default_turn_speed?: number;
   default_loops?: number;
+  calibration?: RouteCalibrationDraft;
   notes?: Array<string>;
   waypoints?: Array<RouteWaypointDraft>;
   steps?: Array<RouteStepDraft>;
@@ -173,6 +228,44 @@ interface RouteServicePayload {
   mode?: string;
   map_brain?: RouteMapBrainStatus;
   route?: RouteImportPayload;
+}
+
+interface PiVoiceTelemetry {
+  available?: boolean;
+  environment_valid?: boolean;
+  temperature_deci_c?: number;
+  humidity_deci_percent?: number;
+  obstacle_enabled?: boolean;
+  obstacle_valid?: boolean;
+  obstacle_blocked?: boolean;
+  distance_mm?: number;
+  threshold_mm?: number;
+  obstacle_reason?: number;
+  alarm_flags?: number;
+  age_s?: number;
+}
+
+interface PiVoiceState {
+  last_intent?: string;
+  last_action?: string;
+  accepted?: number;
+  rejected?: number;
+}
+
+interface PiVoiceEmergency {
+  active?: boolean;
+  sequence?: number;
+  event?: string;
+  message?: string;
+  transcript?: string;
+  source?: string;
+  age_s?: number;
+}
+
+interface PiVoiceLatestPayload {
+  telemetry?: PiVoiceTelemetry;
+  voice?: PiVoiceState;
+  emergency?: PiVoiceEmergency;
 }
 
 // Fallback UUIDs use the same base as the HiSpark SLE sample. The WS63 firmware
@@ -240,6 +333,12 @@ export struct SsapClientPage {
   @State activeMotionCommand: string = '';
   @State motorAutoInitIssued: boolean = false;
   @State motorStateText: string = '未知';
+  @State activeWorkspaceTab: number = 0;
+  @State manualSleSpeed: number = 70;
+  @State manualSpeedText: string = '星闪遥控速度 70%';
+  @State leftWheelScale: number = 100;
+  @State rightWheelScale: number = 100;
+  @State wheelCalibrationText: string = '左右轮均为 100%';
   @State motionStateText: string = '未运动';
   @State lastCommandText: string = '暂无';
   @State lastCommandTime: string = '--:--:--';
@@ -251,13 +350,32 @@ export struct SsapClientPage {
   @State routeBaseUrl: string = DEFAULT_ROUTE_SERVICE_URL;
   @State routeBaseDraft: string = DEFAULT_ROUTE_SERVICE_URL;
   @State routeJsonDraft: string = DEFAULT_ROUTE_JSON_TEXT_SAFE;
-  @State routeMoveDurationText: string = '5.0';
-  @State routeTurnDurationText: string = '0.8';
+  @State routeMoveDurationText: string = '17.64';
+  @State routeTurnDurationText: string = '0.686';
   @State routeMoveSpeedText: string = '0.24';
   @State routeTurnSpeedText: string = '0.5';
+  @State routeWs63SpeedText: string = '100';
   @State routeLoopText: string = '1';
+  @State routeLengthText: string = '25.2';
+  @State routeSecondsPerMeterText: string = '2.80';
+  @State routeNinetyDegreeTurnMsText: string = '686';
+  @State routeSourceMode: number = 0;
+  @State routeImageUri: string = '';
+  @State routeCanvasAspectRatio: number = ROUTE_CANVAS_DEFAULT_ASPECT_RATIO;
+  @State routeCanvasWidth: number = ROUTE_CANVAS_DEFAULT_WIDTH;
+  @State routeCanvasHeight: number = ROUTE_CANVAS_DEFAULT_HEIGHT;
+  @State routeRecognitionBusy: boolean = false;
+  @State routeNameText: string = '新路线';
+  @State routeTool: number = ROUTE_TOOL_SEGMENT;
+  @State routeShapeKind: number = ROUTE_SHAPE_RECTANGLE;
+  @State savedRouteEntries: Array<SavedRouteEntry> = [];
+  @State selectedSavedRouteId: string = '';
+  @State routeTerminalsText: string = '起点和终点待标定';
+  @State routePoints: Array<RoutePointModel> = RoutePlanner.defaultSquare();
+  @State routeSegmentCount: number = 4;
+  @State routeEstimateText: string = '4 段 · 约 73.3 秒';
   @State routeStatusText: string = '等待连接路线服务';
-  @State routeDetailText: string = '默认路线：40 m2 方形巡检，右转 0.8s';
+  @State routeDetailText: string = '默认路线：40 m2 方形巡检，直行 2.80 s/m，右转 686 ms';
   @State routeLastCheckedText: string = '--:--:--';
   @State routeOnline: boolean = false;
   @State routeImportBusy: boolean = false;
@@ -276,22 +394,41 @@ export struct SsapClientPage {
   @State inspectionHumidityText: string = '--';
   @State inspectionAlarmText: string = '未开始';
   @State inspectionAlarmFlags: number = 0;
-  @State inspectionDetailText: string = '自动方形巡检：P 一键启动，G 查轨迹，M 查传感器';
+  @State inspectionDetailText: string = '自动路线巡检：P 一键启动，G 查轨迹，M 查传感器';
   @State inspectionLastUpdateText: string = '--:--:--';
   @State phoneEnvAlarmActive: boolean = false;
   @State phoneEnvAlarmText: string = '手机端环境报警未触发';
+  @State phoneVoiceEmergencyActive: boolean = false;
+  @State phoneVoiceEmergencyText: string = '';
+  @State phoneVoiceEmergencyAckBusy: boolean = false;
 
   logTag: string = 'RobotSleClient';
   domainId: number = 0x0000;
   promptAction: PromptAction = this.getUIContext().getPromptAction();
   cameraController: webview.WebviewController = new webview.WebviewController('RobotDriverCameraWeb');
+  routeCanvasSettings: RenderingContextSettings = new RenderingContextSettings(true);
+  routeCanvasContext: CanvasRenderingContext2D = new CanvasRenderingContext2D(this.routeCanvasSettings);
+  @State routeDrawingActive: boolean = false;
+  routeToolAnchor: RoutePointModel | undefined = undefined;
+  routePreviewPoints: Array<RoutePointModel> = [];
+  routeDragMode: number = ROUTE_DRAG_NONE;
+  routeEditIndex: number = -1;
+  routeLastDragPoint: RoutePointModel | undefined = undefined;
+  routePreferences: preferences.Preferences | undefined = undefined;
+  routeUploadCommands: Array<string> = [];
+  routeUploadIndex: number = -1;
+  routeUploadRetries: number = 0;
+  routeUploadTimer: number = -1;
+  routeStartAfterUpload: boolean = false;
   motionRepeatTimer: number = -1;
   autoInitTimer: number = -1;
   cameraStatusTimer: number = -1;
   inspectionTimer: number = -1;
   inspectionPollBusy: boolean = false;
+  voiceTelemetryBusy: boolean = false;
   lastPhoneEnvAlarmMask: number = 0;
   lastPhoneEnvAlarmToastMs: number = 0;
+  lastPhoneVoiceEmergencySequence: number = 0;
   cameraProbeBusy: boolean = false;
   cameraFailureCount: number = 0;
   safetyStopCallback: (reason: string) => void = (reason: string) => {
@@ -300,11 +437,15 @@ export struct SsapClientPage {
 
   aboutToAppear(): void {
     registerRobotSafetyStop(this.safetyStopCallback);
+    this.updateRoutePlanSummary();
+    this.loadRouteLibrary();
+    this.fetchCurrentRoute(false);
     this.startCameraMonitor();
     this.startInspectionMonitor();
   }
 
   aboutToDisappear(): void {
+    this.cancelRouteUpload();
     this.stopCameraMonitor();
     this.stopInspectionMonitor();
     unregisterRobotSafetyStop(this.safetyStopCallback);
@@ -321,23 +462,64 @@ export struct SsapClientPage {
   }
 
   build() {
-    Scroll() {
-      Column() {
-        this.Header();
-        this.CameraPanel();
-        this.RouteImportPanel();
-        this.CommandPanel();
-        this.StatusPanel();
-        this.DevicePanel();
-        this.ScanPanel();
-        this.ResponsePanel();
+    Column() {
+      this.Header();
+      this.WorkspaceTabBar();
+      Scroll() {
+        Column() {
+          if (this.activeWorkspaceTab === 0) {
+            this.CommandPanel();
+            this.StatusPanel();
+          } else if (this.activeWorkspaceTab === 1) {
+            this.RouteImportPanel();
+          } else if (this.activeWorkspaceTab === 2) {
+            this.CameraPanel();
+            this.InspectionPanel();
+          } else {
+            this.DevicePanel();
+            this.ScanPanel();
+            this.ResponsePanel();
+          }
+        }
+        .width('100%')
+        .padding({ left: 12, right: 12, bottom: 12 })
       }
       .width('100%')
-      .padding(12)
+      .layoutWeight(1)
+      .scrollable(this.routeDrawingActive ? ScrollDirection.None : ScrollDirection.Vertical)
     }
     .width('100%')
     .height('100%')
     .backgroundColor('#fff8fafc')
+  }
+
+  @Builder
+  WorkspaceTabBar() {
+    Row({ space: 6 }) {
+      this.WorkspaceTabButton(0, '控制');
+      this.WorkspaceTabButton(1, '路线');
+      this.WorkspaceTabButton(2, '巡检');
+      this.WorkspaceTabButton(3, '设备');
+    }
+    .width('100%')
+    .padding({ left: 12, right: 12, bottom: 8 })
+  }
+
+  @Builder
+  WorkspaceTabButton(tab: number, label: string) {
+    Button(label)
+      .height(38)
+      .layoutWeight(1)
+      .fontSize(13)
+      .fontWeight(this.activeWorkspaceTab === tab ? FontWeight.Bold : FontWeight.Normal)
+      .fontColor(this.activeWorkspaceTab === tab ? '#ffffffff' : '#ff475569')
+      .backgroundColor(this.activeWorkspaceTab === tab ? '#ff0f766e' : '#ffe2e8f0')
+      .borderRadius(6)
+      .onClick(() => {
+        this.routeDrawingActive = false;
+        this.routeToolAnchor = undefined;
+        this.activeWorkspaceTab = tab;
+      })
   }
 
   @Builder
@@ -501,68 +683,6 @@ export struct SsapClientPage {
       .borderRadius(8)
       .clip(true)
 
-      Row() {
-        this.InspectionMetric('距离', this.inspectionDistanceText, this.inspectionAlarmFlags === 0 ? '#fff0fdfa' : '#fffff7ed');
-        Blank().width('2%')
-        this.InspectionMetric('温度', this.inspectionTemperatureText,
-          (this.inspectionAlarmFlags & ROBOT_MONITOR_ALARM_TEMP_HIGH) !== 0 ? '#fffee2e2' : '#fff8fafc');
-        Blank().width('2%')
-        this.InspectionMetric('湿度', this.inspectionHumidityText,
-          (this.inspectionAlarmFlags & ROBOT_MONITOR_ALARM_HUMIDITY_HIGH) !== 0 ? '#fffee2e2' : '#fff8fafc');
-      }
-      .width('100%')
-      .margin({ top: 10 })
-
-      if (this.phoneEnvAlarmActive) {
-        this.PhoneEnvAlarmBanner();
-      }
-
-      Row() {
-        Text(this.inspectionAlarmText)
-          .fontSize(12)
-          .fontWeight(FontWeight.Bold)
-          .fontColor(this.inspectionAlarmColor())
-          .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-          .backgroundColor(this.inspectionAlarmBgColor())
-          .borderRadius(6)
-        Text(`${this.inspectionStatusText}；${this.inspectionLastUpdateText}`)
-          .fontSize(12)
-          .fontColor('#ff475569')
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .layoutWeight(1)
-          .margin({ left: 8 })
-      }
-      .width('100%')
-      .margin({ top: 8 })
-
-      Text(this.inspectionDetailText)
-        .fontSize(12)
-        .fontColor('#ff475569')
-        .maxLines(2)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .width('100%')
-        .margin({ top: 6 })
-
-      Row({ space: 8 }) {
-        this.DriverMotionButton('L', '←');
-        this.DriverMotionButton('F', '↑');
-        Button('S')
-          .height(44)
-          .layoutWeight(1)
-          .fontSize(16)
-          .fontWeight(FontWeight.Bold)
-          .backgroundColor('#ffb91c1c')
-          .enabled(this.serviceReady)
-          .onClick(() => {
-            this.sendStopCommand('驾驶舱急停');
-          })
-        this.DriverMotionButton('B', '↓');
-        this.DriverMotionButton('R', '→');
-      }
-      .width('100%')
-      .margin({ top: 8 })
-
       Row({ space: 8 }) {
         this.CameraLinkButton('适配', DEFAULT_CAMERA_PATH);
         this.CameraLinkButton('原流', '/stream.mjpg');
@@ -570,28 +690,6 @@ export struct SsapClientPage {
       }
       .width('100%')
       .margin({ top: 10 })
-
-      Row({ space: 8 }) {
-        Button(this.inspectionEnabled ? '暂停巡检' : '启动自动巡检')
-          .height(36)
-          .layoutWeight(1)
-          .fontSize(13)
-          .backgroundColor(this.inspectionEnabled ? '#ff334155' : '#ff0f766e')
-          .onClick(() => {
-            this.toggleInspectionMonitor();
-          })
-        Button('立即巡检')
-          .height(36)
-          .layoutWeight(1)
-          .fontSize(13)
-          .backgroundColor('#ff2563eb')
-          .enabled(this.serviceReady)
-          .onClick(() => {
-            this.pollInspection(true);
-          })
-      }
-      .width('100%')
-      .margin({ top: 8 })
 
       Row({ space: 8 }) {
         TextInput({ text: this.cameraBaseDraft, placeholder: 'http://192.168.43.42:8080' })
@@ -638,7 +736,7 @@ export struct SsapClientPage {
             .fontSize(18)
             .fontWeight(FontWeight.Bold)
             .fontColor('#ff0f172a')
-          Text('Wi-Fi 传路线到树莓派，星闪保留手动控制和急停')
+          Text('图形路线通过 Wi-Fi 保存至树莓派；星闪保留手动控制与急停')
             .fontSize(11)
             .fontColor('#ff5b6676')
             .maxLines(1)
@@ -648,81 +746,38 @@ export struct SsapClientPage {
         .alignItems(HorizontalAlign.Start)
         .layoutWeight(1)
 
-        Text(this.routeOnline ? '路线服务在线' : '路线服务待检')
+        Text(this.routeOnline ? '路线已同步' : '等待路线服务')
           .fontSize(12)
           .fontWeight(FontWeight.Bold)
-          .fontColor(this.routeStatusColor())
+          .fontColor(this.routeOnline ? '#ff166534' : '#ff991b1b')
           .padding({ left: 10, right: 10, top: 6, bottom: 6 })
-          .backgroundColor(this.routeStatusBgColor())
+          .backgroundColor(this.routeOnline ? '#ffdcfce7' : '#fffee2e2')
           .borderRadius(6)
       }
       .width('100%')
-
-      Row({ space: 8 }) {
-        TextInput({ text: this.routeBaseDraft, placeholder: 'http://192.168.43.42:8090' })
-          .height(38)
-          .fontSize(13)
-          .layoutWeight(1)
-          .backgroundColor('#fff8fafc')
-          .borderRadius(6)
-          .onChange((value: string) => {
-            this.routeBaseDraft = value;
-          })
-        Button('应用')
-          .height(38)
-          .fontSize(13)
-          .backgroundColor('#ff475569')
-          .onClick(() => {
-            this.applyRouteBaseUrl();
-          })
-      }
-      .width('100%')
-      .margin({ top: 10 })
 
       this.RouteVisualEditor()
 
       Row({ space: 8 }) {
-        Button('默认方形')
-          .height(36)
-          .layoutWeight(1)
-          .fontSize(13)
-          .backgroundColor('#ff475569')
-          .onClick(() => {
-            this.resetGraphicalRouteDefaults();
-          })
-        Button(this.routeImportBusy ? '导入中' : '导入路线')
-          .height(36)
-          .layoutWeight(1)
-          .fontSize(13)
-          .backgroundColor('#ff0f766e')
-          .enabled(!this.routeImportBusy)
-          .onClick(() => {
-            this.importRouteToPi();
-          })
-      }
-      .width('100%')
-      .margin({ top: 8 })
-
-      Row({ space: 8 }) {
-        Button('读取路线')
+        Button(this.routeImportBusy ? '同步中' : '同步路线')
           .height(36)
           .layoutWeight(1)
           .fontSize(13)
           .backgroundColor('#ff2563eb')
-          .enabled(!this.routeControlBusy)
+          .enabled(!this.routeImportBusy && !this.routeControlBusy && this.routeSegmentCount > 0)
           .onClick(() => {
-            this.fetchCurrentRoute(true);
+            this.importRouteToPi(false);
           })
-        Button('启动路线')
+        Button('启动巡检')
           .height(36)
           .layoutWeight(1)
           .fontSize(13)
           .backgroundColor('#ff0f766e')
-          .enabled(!this.routeControlBusy)
+          .enabled(!this.routeImportBusy && !this.routeControlBusy && this.routeSegmentCount > 0)
           .onClick(() => {
-            this.startImportedRoute();
+            this.importRouteToPi(true);
           })
-        Button('停止路线')
+        Button('停止')
           .height(36)
           .layoutWeight(1)
           .fontSize(13)
@@ -758,6 +813,334 @@ export struct SsapClientPage {
   }
 
   @Builder
+  RouteVisualEditor() {
+    Column() {
+      Row() {
+        Text('路线规划')
+          .fontSize(15)
+          .fontWeight(FontWeight.Bold)
+          .fontColor('#ff0f172a')
+          .layoutWeight(1)
+        Text(this.routeEstimateText)
+          .fontSize(11)
+          .fontColor('#ff64748b')
+      }
+      .width('100%')
+
+      Row() {
+        Button('空白底图')
+          .height(32)
+          .layoutWeight(1)
+          .fontSize(12)
+          .fontColor(this.routeSourceMode === 0 ? '#ffffffff' : '#ff334155')
+          .backgroundColor(this.routeSourceMode === 0 ? '#ff0f766e' : '#ffe2e8f0')
+          .borderRadius({ topLeft: 6, bottomLeft: 6, topRight: 0, bottomRight: 0 })
+          .onClick(() => {
+            this.routeSourceMode = 0;
+            this.routeImageUri = '';
+            this.routeCanvasAspectRatio = ROUTE_CANVAS_DEFAULT_ASPECT_RATIO;
+            setTimeout((): void => {
+              this.drawRouteCanvas();
+            }, 0);
+          })
+        Button('导入地图')
+          .height(32)
+          .layoutWeight(1)
+          .fontSize(12)
+          .fontColor(this.routeSourceMode === 1 ? '#ffffffff' : '#ff334155')
+          .backgroundColor(this.routeSourceMode === 1 ? '#ff0f766e' : '#ffe2e8f0')
+          .borderRadius({ topLeft: 0, bottomLeft: 0, topRight: 6, bottomRight: 6 })
+          .onClick(() => {
+            this.selectRouteImage();
+          })
+      }
+      .width('100%')
+      .margin({ top: 8 })
+
+      Flex({ wrap: FlexWrap.Wrap }) {
+        this.RouteToolButton(ROUTE_TOOL_SEGMENT, '逐点');
+        this.RouteToolButton(ROUTE_TOOL_EDIT, '编辑');
+        this.RouteToolButton(ROUTE_TOOL_LINE, '直线');
+        this.RouteToolButton(ROUTE_TOOL_TRIANGLE, '三角');
+        this.RouteToolButton(ROUTE_TOOL_RECTANGLE, '矩形');
+        this.RouteToolButton(ROUTE_TOOL_START, '起点');
+        this.RouteToolButton(ROUTE_TOOL_END, '终点');
+      }
+      .width('100%')
+      .margin({ top: 8 })
+
+      Text(this.routeToolHint())
+        .fontSize(11)
+        .fontColor('#ff64748b')
+        .width('100%')
+        .margin({ top: 2 })
+
+      Row({ space: 8 }) {
+        Button('反向')
+          .height(30)
+          .layoutWeight(1)
+          .fontSize(12)
+          .backgroundColor('#ff475569')
+          .enabled(this.routePoints.length >= 2)
+          .onClick(() => {
+            this.reverseRouteDirection();
+          })
+        Button(this.routeIsClosed() ? '改为开环' : '闭合路线')
+          .height(30)
+          .layoutWeight(1)
+          .fontSize(12)
+          .backgroundColor('#ff2563eb')
+          .enabled(this.routePoints.length >= 2)
+          .onClick(() => {
+            this.toggleRouteClosed();
+          })
+        Button('保存路线')
+          .height(30)
+          .layoutWeight(1)
+          .fontSize(12)
+          .backgroundColor('#ff0f766e')
+          .enabled(this.routePoints.length >= 2)
+          .onClick(() => {
+            this.saveCurrentRoute();
+          })
+      }
+      .width('100%')
+      .margin({ top: 8 })
+
+      Row({ space: 8 }) {
+        Column() {
+          Text('直行标定')
+            .fontSize(11)
+            .fontColor('#ff64748b')
+          TextInput({ text: this.routeSecondsPerMeterText, placeholder: '2.80' })
+            .height(34)
+            .fontSize(13)
+            .backgroundColor('#fff8fafc')
+            .borderRadius(6)
+            .onChange((value: string) => {
+              this.routeSecondsPerMeterText = value;
+              this.updateRoutePlanSummary();
+            })
+          Text('基准速度 100（0.24）秒/米')
+            .fontSize(10)
+            .fontColor('#ff94a3b8')
+        }
+        .layoutWeight(1)
+
+        Column() {
+          Text('转向标定')
+            .fontSize(11)
+            .fontColor('#ff64748b')
+          TextInput({ text: this.routeNinetyDegreeTurnMsText, placeholder: '686' })
+            .height(34)
+            .fontSize(13)
+            .backgroundColor('#fff8fafc')
+            .borderRadius(6)
+            .onChange((value: string) => {
+              this.routeNinetyDegreeTurnMsText = value;
+              this.updateRoutePlanSummary();
+            })
+          Text('基准速度 100，90° 转向 / ms')
+            .fontSize(10)
+            .fontColor('#ff94a3b8')
+        }
+        .layoutWeight(1)
+      }
+      .width('100%')
+      .margin({ top: 8 })
+
+      Stack({ alignContent: Alignment.Center }) {
+        if (this.routeImageUri.length > 0) {
+          Image(this.routeImageUri)
+            .width('100%')
+            .height('100%')
+            .objectFit(ImageFit.Contain)
+        }
+        Canvas(this.routeCanvasContext)
+          .width('100%')
+          .height('100%')
+          .backgroundColor(this.routeImageUri.length > 0 ? '#00000000' : '#fff8fafc')
+          .onReady(() => {
+            this.drawRouteCanvas();
+          })
+          .onTouch((event: TouchEvent) => {
+            this.handleRouteCanvasTouch(event);
+          })
+      }
+      .width('100%')
+      .aspectRatio(this.routeCanvasAspectRatio)
+      .onAreaChange((_: Area, area: Area) => {
+        this.updateRouteCanvasArea(area);
+      })
+      .borderRadius(6)
+      .border({ width: 1, color: '#ffe2e8f0' })
+      .clip(true)
+      .margin({ top: 8 })
+
+      Row({ space: 8 }) {
+        Button('撤销节点')
+          .height(32)
+          .layoutWeight(1)
+          .fontSize(12)
+          .backgroundColor('#ff475569')
+          .enabled(this.routePoints.length > 0)
+          .onClick(() => {
+            this.undoRoutePoint();
+          })
+        Button('清空')
+          .height(32)
+          .layoutWeight(1)
+          .fontSize(12)
+          .backgroundColor('#ff64748b')
+          .onClick(() => {
+            this.clearRouteDrawing();
+          })
+        Button('默认方形')
+          .height(32)
+          .layoutWeight(1)
+          .fontSize(12)
+          .backgroundColor('#ff475569')
+          .onClick(() => {
+            this.resetGraphicalRouteDefaults();
+          })
+      }
+      .width('100%')
+      .margin({ top: 8 })
+
+      Text(this.routeTerminalsText)
+        .fontSize(11)
+        .fontColor('#ff475569')
+        .width('100%')
+        .margin({ top: 6 })
+
+      Row({ space: 8 }) {
+        TextInput({ text: this.routeNameText, placeholder: '路线名称' })
+          .height(34)
+          .layoutWeight(1)
+          .fontSize(13)
+          .backgroundColor('#fff8fafc')
+          .borderRadius(6)
+          .onChange((value: string) => {
+            this.routeNameText = value;
+          })
+        Button('保存')
+          .height(34)
+          .fontSize(12)
+          .backgroundColor('#ff0f766e')
+          .enabled(this.routePoints.length >= 2)
+          .onClick(() => {
+            this.saveCurrentRoute();
+          })
+        Button('删除')
+          .height(34)
+          .fontSize(12)
+          .backgroundColor('#ffb91c1c')
+          .enabled(this.selectedSavedRouteId.length > 0)
+          .onClick(() => {
+            this.deleteSelectedRoute();
+          })
+      }
+      .width('100%')
+      .margin({ top: 8 })
+
+      if (this.savedRouteEntries.length > 0) {
+        Flex({ wrap: FlexWrap.Wrap }) {
+          ForEach(this.savedRouteEntries, (entry: SavedRouteEntry) => {
+            Button(entry.name)
+              .height(30)
+              .fontSize(11)
+              .margin({ right: 6, bottom: 6 })
+              .backgroundColor(this.selectedSavedRouteId === entry.id ? '#ff2563eb' : '#ffe2e8f0')
+              .fontColor(this.selectedSavedRouteId === entry.id ? '#ffffffff' : '#ff334155')
+              .onClick(() => {
+                this.selectSavedRoute(entry.id);
+              })
+          }, (entry: SavedRouteEntry) => entry.id)
+        }
+        .width('100%')
+        .margin({ top: 8 })
+      }
+
+      Row({ space: 8 }) {
+        Column() {
+          Text('全程总长')
+            .fontSize(11)
+            .fontColor('#ff64748b')
+          TextInput({ text: this.routeLengthText, placeholder: '25.2' })
+            .height(34)
+            .fontSize(13)
+            .backgroundColor('#fff8fafc')
+            .borderRadius(6)
+            .onChange((value: string) => {
+              this.routeLengthText = value;
+              this.updateRoutePlanSummary();
+            })
+          Text('米')
+            .fontSize(10)
+            .fontColor('#ff94a3b8')
+        }
+        .layoutWeight(1)
+
+        Column() {
+          Text('速度')
+            .fontSize(11)
+            .fontColor('#ff64748b')
+          TextInput({ text: this.routeWs63SpeedText, placeholder: '100' })
+            .height(34)
+            .fontSize(13)
+            .backgroundColor('#fff8fafc')
+            .borderRadius(6)
+            .onChange((value: string) => {
+              this.routeWs63SpeedText = value;
+              this.updateRoutePlanSummary();
+            })
+          Text('30-100')
+            .fontSize(10)
+            .fontColor('#ff94a3b8')
+        }
+        .layoutWeight(1)
+
+        Column() {
+          Text('循环')
+            .fontSize(11)
+            .fontColor('#ff64748b')
+          TextInput({ text: this.routeLoopText, placeholder: '1' })
+            .height(34)
+            .fontSize(13)
+            .backgroundColor('#fff8fafc')
+            .borderRadius(6)
+            .onChange((value: string) => {
+              this.routeLoopText = value;
+              this.updateRoutePlanSummary();
+            })
+          Text('0=连续')
+            .fontSize(10)
+            .fontColor('#ff94a3b8')
+        }
+        .layoutWeight(1)
+      }
+      .width('100%')
+      .margin({ top: 8 })
+    }
+    .width('100%')
+    .margin({ top: 10 })
+  }
+
+  @Builder
+  RouteToolButton(tool: number, label: string) {
+    Button(label)
+      .height(30)
+      .fontSize(11)
+      .margin({ right: 6, bottom: 6 })
+      .backgroundColor(this.routeTool === tool ? '#ff0f766e' : '#ffe2e8f0')
+      .fontColor(this.routeTool === tool ? '#ffffffff' : '#ff334155')
+      .onClick(() => {
+        this.routeTool = tool;
+        this.routeToolAnchor = undefined;
+      })
+  }
+
+  @Builder
   CameraLinkButton(label: string, path: string) {
     Button(label)
       .height(34)
@@ -770,17 +1153,137 @@ export struct SsapClientPage {
   }
 
   @Builder
-  DriverMotionButton(command: string, label: string) {
-    Button(label)
-      .onTouch((event: TouchEvent) => {
-        this.handleMotionTouch(command, event);
-      })
-      .enabled(this.serviceReady)
-      .height(44)
-      .layoutWeight(1)
-      .fontSize(22)
-      .fontWeight(FontWeight.Bold)
-      .backgroundColor(this.activeMotionCommand === command ? '#ff0f766e' : '#ff2563eb')
+  ManualSpeedPanel() {
+    Column() {
+      Row() {
+        Text('星闪遥控速度')
+          .fontSize(15)
+          .fontWeight(FontWeight.Bold)
+          .fontColor('#ff0f172a')
+          .layoutWeight(1)
+        Text(`${this.manualSleSpeed}%`)
+          .fontSize(16)
+          .fontWeight(FontWeight.Bold)
+          .fontColor('#ff0f766e')
+      }
+      .width('100%')
+
+      Slider({ value: this.manualSleSpeed, min: 30, max: 100, step: 1 })
+        .width('100%')
+        .margin({ top: 8 })
+        .onChange((value: number) => {
+          this.manualSleSpeed = Math.round(value);
+          this.manualSpeedText = `待应用：${this.manualSleSpeed}%`;
+        })
+
+      Row({ space: 8 }) {
+        Text(this.manualSpeedText)
+          .fontSize(11)
+          .fontColor('#ff64748b')
+          .layoutWeight(1)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+        Button('应用速度')
+          .height(32)
+          .fontSize(12)
+          .backgroundColor('#ff0f766e')
+          .enabled(this.serviceReady && !this.commandBusy)
+          .onClick(() => {
+            this.applyManualSleSpeed();
+          })
+        Button('默认 70%')
+          .height(32)
+          .fontSize(12)
+          .backgroundColor('#ff475569')
+          .enabled(this.serviceReady && !this.commandBusy)
+          .onClick(() => {
+            this.manualSleSpeed = 70;
+            this.applyManualSleSpeed();
+          })
+      }
+      .width('100%')
+      .margin({ top: 6 })
+    }
+    .width('100%')
+    .margin({ top: 10, bottom: 2 })
+  }
+
+  @Builder
+  WheelCalibrationPanel() {
+    Column() {
+      Row() {
+        Text('左右轮速度校准')
+          .fontSize(15)
+          .fontWeight(FontWeight.Bold)
+          .fontColor('#ff0f172a')
+          .layoutWeight(1)
+        Text(this.wheelCalibrationText)
+          .fontSize(11)
+          .fontColor('#ff64748b')
+      }
+      .width('100%')
+
+      Row({ space: 8 }) {
+        Text('左轮')
+          .width(34)
+          .fontSize(12)
+          .fontColor('#ff475569')
+        Slider({ value: this.leftWheelScale, min: 70, max: 120, step: 1 })
+          .layoutWeight(1)
+          .onChange((value: number) => {
+            this.leftWheelScale = Math.round(value);
+          })
+        Text(`${this.leftWheelScale}%`)
+          .width(42)
+          .fontSize(12)
+          .fontColor('#ff0f172a')
+      }
+      .width('100%')
+      .margin({ top: 6 })
+
+      Row({ space: 8 }) {
+        Text('右轮')
+          .width(34)
+          .fontSize(12)
+          .fontColor('#ff475569')
+        Slider({ value: this.rightWheelScale, min: 70, max: 120, step: 1 })
+          .layoutWeight(1)
+          .onChange((value: number) => {
+            this.rightWheelScale = Math.round(value);
+          })
+        Text(`${this.rightWheelScale}%`)
+          .width(42)
+          .fontSize(12)
+          .fontColor('#ff0f172a')
+      }
+      .width('100%')
+      .margin({ top: 4 })
+
+      Row({ space: 8 }) {
+        Button('下发校准')
+          .height(32)
+          .layoutWeight(1)
+          .fontSize(12)
+          .backgroundColor('#ff0f766e')
+          .enabled(this.serviceReady && !this.commandBusy)
+          .onClick(() => {
+            this.applyWheelCalibration();
+          })
+        Button('复位 100%')
+          .height(32)
+          .layoutWeight(1)
+          .fontSize(12)
+          .backgroundColor('#ff475569')
+          .enabled(this.serviceReady && !this.commandBusy)
+          .onClick(() => {
+            this.resetWheelCalibration();
+          })
+      }
+      .width('100%')
+      .margin({ top: 8 })
+    }
+    .width('100%')
+    .margin({ top: 10, bottom: 2 })
   }
 
   @Builder
@@ -788,7 +1291,7 @@ export struct SsapClientPage {
     Column() {
       Row() {
         Column() {
-          Text('自动方形巡检')
+          Text('自动路线巡检')
             .fontSize(17)
             .fontWeight(FontWeight.Bold)
             .fontColor('#ff0f172a')
@@ -828,6 +1331,10 @@ export struct SsapClientPage {
         this.PhoneEnvAlarmBanner();
       }
 
+      if (this.phoneVoiceEmergencyActive) {
+        this.PhoneVoiceEmergencyBanner();
+      }
+
       Text(this.inspectionDetailText)
         .fontSize(12)
         .fontColor('#ff475569')
@@ -837,7 +1344,7 @@ export struct SsapClientPage {
         .margin({ top: 8 })
 
       Row({ space: 8 }) {
-        Button(this.inspectionEnabled ? '暂停巡检' : '启动自动方形巡检')
+        Button(this.inspectionEnabled ? '暂停巡检' : '启动自动路线巡检')
           .height(36)
           .layoutWeight(1)
           .fontSize(13)
@@ -1206,14 +1713,14 @@ export struct SsapClientPage {
       .margin({ top: 8, bottom: 8 })
 
       Row() {
-        Button('Retry 7100')
+        Button('重试服务')
           .onClick(() => {
             this.retryServiceDiscovery();
           })
           .enabled(client !== undefined)
           .width('45%')
         Blank().width('5%')
-        Button('Clear Busy')
+        Button('清除忙状态')
           .onClick(() => {
             this.clearBusyState();
           })
@@ -1248,6 +1755,8 @@ export struct SsapClientPage {
         .width('100%')
         .margin({ bottom: 6 })
 
+      this.ManualSpeedPanel()
+
       Column() {
         Row() {
           Blank().width('34%')
@@ -1279,6 +1788,8 @@ export struct SsapClientPage {
         .width('100%')
       }
       .width('100%')
+
+      this.WheelCalibrationPanel()
 
       Text('辅助功能')
         .fontSize(15)
@@ -1324,9 +1835,13 @@ export struct SsapClientPage {
   ActionButton(command: string, label: string) {
     Button(label)
       .onClick(() => {
-        this.writeCommand(command);
+        if (command === 'P') {
+          this.importRouteToPi(true);
+        } else {
+          this.writeCommand(command);
+        }
       })
-      .enabled(this.serviceReady && !this.commandBusy)
+      .enabled(this.serviceReady && !this.commandBusy && (command !== 'P' || !this.routeControlBusy))
       .width('30%')
       .height(40)
       .margin({ right: 6, bottom: 6 })
@@ -1727,7 +2242,7 @@ export struct SsapClientPage {
 
   startInspectionMonitor() {
     this.stopInspectionMonitor();
-    this.inspectionStatusText = this.serviceReady ? '自动方形巡检待启动' : '等待星闪服务';
+    this.inspectionStatusText = this.serviceReady ? '自动路线巡检待启动' : '等待星闪服务';
     this.inspectionTimer = setInterval(() => {
       this.pollInspection(false);
     }, INSPECTION_POLL_MS);
@@ -1748,23 +2263,22 @@ export struct SsapClientPage {
         this.inspectionStatusText = '等待星闪服务';
         return;
       }
-      this.inspectionEnabled = true;
-      this.inspectionStatusText = '正在启动自动方形巡检';
-      this.writeCommand('P', true, false);
+      this.inspectionStatusText = '正在同步路线并启动自动巡检';
+      this.importRouteToPi(true);
       setTimeout(() => {
         this.pollInspection(true);
       }, 800);
     } else {
       this.inspectionEnabled = false;
-      this.inspectionStatusText = '自动方形巡检已暂停';
+      this.inspectionStatusText = '自动路线巡检已暂停';
       this.sendStopCommand('暂停巡检');
     }
   }
 
   pollInspection(force: boolean) {
-    if (!this.inspectionEnabled) {
-      return;
-    }
+    // Voice requests are mediated by the Pi, so query its snapshot even when
+    // the user has not enabled the SLE-driven automatic inspection loop.
+    this.fetchVoiceTelemetry(force);
     if (!this.serviceReady || client === undefined) {
       if (force) {
         this.inspectionStatusText = '等待星闪服务';
@@ -1776,19 +2290,119 @@ export struct SsapClientPage {
     }
     this.inspectionPollBusy = true;
     this.inspectionStatusText = '正在读取巡检快照';
-    if (this.inspectionEnabled) {
-      this.writeCommand('G', true, false);
-      setTimeout(() => {
-        if (this.inspectionEnabled && this.serviceReady) {
-          this.writeCommand('M', true, false);
-        }
-      }, 350);
-    } else {
-      this.writeCommand('M', true, false);
-    }
+    // M contains the current obstacle and environment snapshot. Sending one
+    // command per cycle preserves SLE command headroom for manual control.
+    this.writeCommand('M', true, false);
     setTimeout(() => {
       this.inspectionPollBusy = false;
-    }, Math.max(INSPECTION_POLL_MS - 100, 300));
+    }, Math.max(INSPECTION_POLL_MS - 80, 250));
+  }
+
+  @Builder
+  PhoneVoiceEmergencyBanner() {
+    Row() {
+      Text('语音紧急事件')
+        .fontSize(12)
+        .fontWeight(FontWeight.Bold)
+        .fontColor('#ffffffff')
+        .padding({ left: 10, right: 10, top: 5, bottom: 5 })
+        .backgroundColor('#ff991b1b')
+        .borderRadius(6)
+      Text(this.phoneVoiceEmergencyText)
+        .fontSize(12)
+        .fontWeight(FontWeight.Bold)
+        .fontColor('#ff991b1b')
+        .maxLines(2)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .layoutWeight(1)
+        .margin({ left: 8 })
+      Button(this.phoneVoiceEmergencyAckBusy ? '确认中' : '确认已知晓')
+        .height(30)
+        .fontSize(11)
+        .fontColor('#ffffffff')
+        .backgroundColor('#ff991b1b')
+        .borderRadius(6)
+        .enabled(!this.phoneVoiceEmergencyAckBusy)
+        .margin({ left: 8 })
+        .onClick(() => {
+          this.acknowledgePhoneVoiceEmergency();
+        })
+    }
+    .width('100%')
+    .padding({ left: 8, right: 8, top: 8, bottom: 8 })
+    .margin({ top: 8 })
+    .backgroundColor('#fffff1f2')
+    .borderRadius(8)
+    .border({ width: 1, color: '#fffca5a5' })
+  }
+
+  fetchVoiceTelemetry(force: boolean) {
+    if (this.voiceTelemetryBusy && !force) {
+      return;
+    }
+    this.voiceTelemetryBusy = true;
+    let request = http.createHttp();
+    request.request(`${this.routeBaseUrl}/voice/latest`, {
+      method: http.RequestMethod.GET,
+      connectTimeout: 2000,
+      readTimeout: 2000,
+      expectDataType: http.HttpDataType.STRING
+    }, (err: BusinessError, data: http.HttpResponse) => {
+      this.voiceTelemetryBusy = false;
+      try {
+        request.destroy();
+      } catch (destroyErr) {
+        hilog.warn(this.domainId, this.logTag,
+          `voice telemetry request destroy ignored: ${(destroyErr as BusinessError).code}`);
+      }
+      if (err !== undefined && err !== null || data.responseCode < 200 || data.responseCode >= 300) {
+        if (force && !this.inspectionEnabled) {
+          this.inspectionDetailText = '树莓派实时传感器服务暂不可达';
+        }
+        return;
+      }
+
+      let resultText = typeof data.result === 'string' ? data.result : JSON.stringify(data.result);
+      try {
+        let payload = JSON.parse(resultText) as PiVoiceLatestPayload;
+        this.handlePhoneVoiceEmergency(payload.emergency);
+        let telemetry = payload.telemetry;
+        if (telemetry === undefined || telemetry.available !== true) {
+          if (force && !this.inspectionEnabled) {
+            this.inspectionDetailText = '尚未收到 WS63 实时传感器快照';
+          }
+          return;
+        }
+
+        let temperature = Number(telemetry.temperature_deci_c === undefined ? 0 : telemetry.temperature_deci_c);
+        let humidity = Number(telemetry.humidity_deci_percent === undefined ? 0 : telemetry.humidity_deci_percent);
+        let environmentValid = telemetry.environment_valid === true;
+        let obstacleEnabled = telemetry.obstacle_enabled === true;
+        let obstacleValid = telemetry.obstacle_valid === true;
+        let obstacleBlocked = telemetry.obstacle_blocked === true;
+        let distance = Number(telemetry.distance_mm === undefined ? 0 : telemetry.distance_mm);
+        let threshold = Number(telemetry.threshold_mm === undefined ? 0 : telemetry.threshold_mm);
+        let reason = Number(telemetry.obstacle_reason === undefined ? 0 : telemetry.obstacle_reason);
+        let alarms = Number(telemetry.alarm_flags === undefined ? 0 : telemetry.alarm_flags);
+        this.updateInspectionEnv(environmentValid, temperature, humidity, false);
+        this.updateInspectionObstacle(obstacleEnabled, obstacleValid, obstacleBlocked, distance, threshold, reason);
+        this.inspectionAlarmFlags = alarms;
+        this.inspectionAlarmText = this.inspectionAlarmSummary(alarms);
+        this.handlePhoneEnvironmentAlarm(alarms, temperature, humidity);
+
+        let voiceAction = payload.voice === undefined ? '' : this.textOrDefault(payload.voice.last_action, '');
+        let voiceIntent = payload.voice === undefined ? '' : this.textOrDefault(payload.voice.last_intent, '');
+        let sourceText = voiceAction.length > 0 ? `语音请求：${voiceIntent}，${voiceAction}` : '实时数据已同步';
+        this.inspectionDetailText = `${sourceText}；数据源：树莓派 / WS63`;
+        this.inspectionStatusText = this.environmentAlarmMask(alarms) !== 0 ? '温湿度异常报警' :
+          (this.inspectionEnabled ? '自动路线巡检中' : '实时感知数据已同步');
+        this.inspectionLastUpdateText = this.nowText();
+      } catch (parseErr) {
+        if (force && !this.inspectionEnabled) {
+          this.inspectionDetailText = '树莓派实时传感器响应解析失败';
+        }
+      }
+    });
   }
 
   tryAutoInitMotor() {
@@ -1865,6 +2479,28 @@ export struct SsapClientPage {
     this.motionStateText = '停止中';
     this.robotStatus = `${reason}，已发送停止 S`;
     this.writeCommand('S', true, false);
+  }
+
+  applyManualSleSpeed() {
+    let speed = Math.max(30, Math.min(100, Math.round(this.manualSleSpeed)));
+    this.manualSleSpeed = speed;
+    this.manualSpeedText = `正在下发星闪遥控速度：${speed}%`;
+    this.writeCommand(`V,${speed}`);
+  }
+
+  applyWheelCalibration() {
+    let left = Math.max(70, Math.min(120, Math.round(this.leftWheelScale)));
+    let right = Math.max(70, Math.min(120, Math.round(this.rightWheelScale)));
+    this.leftWheelScale = left;
+    this.rightWheelScale = right;
+    this.wheelCalibrationText = `正在下发：左 ${left}% · 右 ${right}%`;
+    this.writeCommand(`W,${left},${right}`);
+  }
+
+  resetWheelCalibration() {
+    this.leftWheelScale = 100;
+    this.rightWheelScale = 100;
+    this.applyWheelCalibration();
   }
 
   stopMotionRepeat() {
@@ -2103,7 +2739,7 @@ export struct SsapClientPage {
     this.inspectionHumidityText = '--';
     this.inspectionAlarmText = '未开始';
     this.inspectionAlarmFlags = 0;
-    this.inspectionDetailText = '自动方形巡检：P 一键启动，G 查轨迹，M 查传感器';
+    this.inspectionDetailText = '自动路线巡检：P 一键启动，G 查轨迹，M 查传感器';
     this.inspectionLastUpdateText = '--:--:--';
     this.phoneEnvAlarmActive = false;
     this.phoneEnvAlarmText = '手机端环境报警未触发';
@@ -2138,6 +2774,12 @@ export struct SsapClientPage {
   }
 
   commandName(command: string): string {
+    if (command.startsWith('V')) {
+      return '星闪遥控速度';
+    }
+    if (command.startsWith('W')) {
+      return '左右轮校准';
+    }
     switch (command) {
       case 'T':
         return '读取状态';
@@ -2148,7 +2790,7 @@ export struct SsapClientPage {
       case 'A':
         return '启动避障';
       case 'P':
-        return '自动方形巡检';
+        return '自动路线巡检';
       case 'G':
         return '轨迹状态';
       case 'E':
@@ -2265,7 +2907,7 @@ export struct SsapClientPage {
     this.inspectionAlarmText = this.inspectionAlarmSummary(alarmFlags);
     this.handlePhoneEnvironmentAlarm(alarmFlags, temperature, humidity);
     this.inspectionStatusText = this.environmentAlarmMask(alarmFlags) !== 0 ? '温湿度异常报警' :
-      (this.inspectionEnabled ? '自动方形巡检中' : '巡检快照已更新');
+      (this.inspectionEnabled ? '自动路线巡检中' : '巡检快照已更新');
     this.inspectionDetailText =
       `运行 ${Math.floor(uptimeMs / 1000)}s，采样 ${sampleCount}，环境龄 ${this.ageText(envAge)}，距离龄 ${this.ageText(obstacleAge)}`;
   }
@@ -2402,6 +3044,59 @@ export struct SsapClientPage {
     this.lastPhoneEnvAlarmMask = 0;
   }
 
+  handlePhoneVoiceEmergency(emergency: PiVoiceEmergency | undefined) {
+    if (emergency === undefined || emergency.active !== true) {
+      if (this.phoneVoiceEmergencyActive) {
+        this.showInspectionToast('语音紧急事件已确认', 1500);
+      }
+      this.phoneVoiceEmergencyActive = false;
+      this.phoneVoiceEmergencyText = '';
+      this.lastPhoneVoiceEmergencySequence = 0;
+      return;
+    }
+
+    let sequence = Number(emergency.sequence === undefined ? 0 : emergency.sequence);
+    let message = this.textOrDefault(emergency.message, '检测到语音紧急事件，等待人工接管');
+    this.phoneVoiceEmergencyActive = true;
+    this.phoneVoiceEmergencyText = message;
+    if (sequence > this.lastPhoneVoiceEmergencySequence || this.lastPhoneVoiceEmergencySequence === 0) {
+      this.showInspectionToast(`紧急广播：${message}`, 5000);
+      this.lastPhoneVoiceEmergencySequence = sequence;
+    }
+  }
+
+  acknowledgePhoneVoiceEmergency() {
+    if (this.phoneVoiceEmergencyAckBusy) {
+      return;
+    }
+    this.phoneVoiceEmergencyAckBusy = true;
+    let request = http.createHttp();
+    request.request(`${this.routeBaseUrl}/voice/emergency/ack`, {
+      method: http.RequestMethod.POST,
+      extraData: '{}',
+      header: { 'Content-Type': 'application/json' },
+      connectTimeout: 2000,
+      readTimeout: 2000,
+      expectDataType: http.HttpDataType.STRING
+    }, (err: BusinessError, data: http.HttpResponse) => {
+      this.phoneVoiceEmergencyAckBusy = false;
+      try {
+        request.destroy();
+      } catch (destroyErr) {
+        hilog.warn(this.domainId, this.logTag,
+          `voice emergency acknowledgement destroy ignored: ${(destroyErr as BusinessError).code}`);
+      }
+      if (err !== undefined && err !== null || data.responseCode < 200 || data.responseCode >= 300) {
+        this.showInspectionToast('紧急事件确认失败，请检查树莓派连接', 2500);
+        return;
+      }
+      this.phoneVoiceEmergencyActive = false;
+      this.phoneVoiceEmergencyText = '';
+      this.lastPhoneVoiceEmergencySequence = 0;
+      this.showInspectionToast('已确认紧急事件，车辆仍保持停止', 1800);
+    });
+  }
+
   ageText(value: number): string {
     if (value === 4294967295) {
       return '未知';
@@ -2454,6 +3149,8 @@ export struct SsapClientPage {
         return '环境告警驻留';
       case 12:
         return '传感器异常';
+      case 13:
+        return '路线左转';
       default:
         return `阶段 ${phase}`;
     }
@@ -2507,6 +3204,30 @@ export struct SsapClientPage {
       case 'MOTOR':
         this.motorStateText = Number(parts[1]) === 1 ? '已就绪' : '初始化失败';
         break;
+      case 'SPEED': {
+        let status = parts.length > 1 ? parts[1] : 'ERR';
+        let speed = Number(parts[2]);
+        if ((status === 'OK' || status === 'CFG') && speed === speed) {
+          this.manualSleSpeed = speed;
+          this.manualSpeedText = `已生效：星闪遥控速度 ${speed}%`;
+        } else {
+          this.manualSpeedText = '星闪遥控速度下发失败';
+        }
+        break;
+      }
+      case 'WHEEL': {
+        let status = parts.length > 1 ? parts[1] : 'ERR';
+        let left = Number(parts[2]);
+        let right = Number(parts[3]);
+        if ((status === 'OK' || status === 'CFG') && left === left && right === right) {
+          this.leftWheelScale = left;
+          this.rightWheelScale = right;
+          this.wheelCalibrationText = `已生效：左 ${left}% · 右 ${right}%`;
+        } else {
+          this.wheelCalibrationText = '左右轮校准下发失败';
+        }
+        break;
+      }
       case 'ENV': {
         let ok = Number(parts[1]) === 1;
         let temperature = Number(parts[2]);
@@ -2527,6 +3248,37 @@ export struct SsapClientPage {
       case 'MON':
         this.updateInspectionMonitor(parts);
         break;
+      case 'ROUTE': {
+        let status = parts.length > 1 ? parts[1] : 'ERR';
+        this.handleRouteUploadResponse(status, parts);
+        if (status === 'BEGIN' || status === 'SEG') {
+          this.routeOnline = true;
+        } else if ((status === 'OK' || status === 'CFG') && parts.length >= 5) {
+          let segmentCount = Number(parts[2]);
+          let speed = Number(parts[3]);
+          let loops = Number(parts[4]);
+          if (parts.length >= 6 && segmentCount > 12) {
+            segmentCount = 4;
+            speed = Number(parts[4]);
+            loops = Number(parts[5]);
+          }
+          this.routeWs63SpeedText = `${speed}`;
+          this.routeLoopText = `${loops}`;
+          this.routeSegmentCount = segmentCount;
+          this.routeOnline = true;
+          if (this.routeUploadIndex < 0) {
+            this.routeImportBusy = false;
+            this.routeStatusText = status === 'OK' ? 'WS63 已保存完整路线' : 'WS63 当前路线配置';
+          }
+          this.routeDetailText = `${segmentCount} 段路线，速度 ${speed}，${loops === 0 ? '连续循环' : `${loops}圈`}`;
+        } else if (status === 'ERR') {
+          this.routeOnline = false;
+          this.routeImportBusy = false;
+          this.routeStatusText = `WS63 路线配置失败：${parts.length > 2 ? parts[2] : status}`;
+          this.routeDetailText = '请确认小车已烧录支持 R0/R1/R2 分段路线协议的固件';
+        }
+        break;
+      }
       case 'PATROL': {
         let active = Number(parts[1]) === 1;
         let phase = Number(parts[2]);
@@ -2548,7 +3300,7 @@ export struct SsapClientPage {
         this.handlePhoneEnvironmentAlarm(alarmFlags);
         this.updateInspectionObstacle(enabled, valid, blocked, distance, threshold, reason);
         this.inspectionStatusText = this.environmentAlarmMask(alarmFlags) !== 0 ? '温湿度异常报警' :
-          (active ? `自动方形巡检中：第 ${leg + 1}/4 边` : `自动方形巡检未启动：${this.statusName(status)}`);
+          (active ? `自定义路线巡检中：第 ${leg + 1}/${this.routeSegmentCount} 段` : `路线巡检未启动：${this.statusName(status)}`);
         this.inspectionDetailText = `阶段：${this.patrolPhaseName(phase)}，已完成 ${loop} 圈，${this.inspectionAlarmSummary(alarmFlags)}`;
         break;
       }
@@ -2594,6 +3346,12 @@ export struct SsapClientPage {
       }
       case 'MOTOR':
         return Number(parts[1]) === 1 ? '电机初始化成功' : '电机初始化失败';
+      case 'SPEED': {
+        let status = parts.length > 1 ? parts[1] : 'ERR';
+        let speed = Number(parts[2]);
+        return (status === 'OK' || status === 'CFG') && speed === speed ?
+          `星闪遥控速度已设为 ${speed}%` : '星闪遥控速度设置失败';
+      }
       case 'OLED':
         return Number(parts[1]) === 1 ? 'OLED 初始化成功' : 'OLED 初始化失败';
       case 'ENV': {
@@ -2636,6 +3394,23 @@ export struct SsapClientPage {
         let distText = obsValid ? `${distance}mm/${threshold}mm` : `距离无效(${this.obstacleReasonName(reason)})`;
         return `巡检快照：${tempText}，${distText}，${blocked ? '前方障碍' : '无障碍'}，${this.inspectionAlarmSummary(alarmFlags)}`;
       }
+      case 'ROUTE': {
+        let status = parts.length > 1 ? parts[1] : 'ERR';
+        if (status === 'BEGIN') {
+          return `WS63 已开始接收 ${parts[2]} 段路线`;
+        }
+        if (status === 'SEG') {
+          return `WS63 已接收第 ${Number(parts[2]) + 1} 段路线`;
+        }
+        if ((status === 'OK' || status === 'CFG') && parts.length >= 5) {
+          let segmentCount = Number(parts[2]);
+          let speed = Number(parts[3]);
+          let loops = Number(parts[4]);
+          let prefix = status === 'OK' ? 'WS63 路线导入成功' : 'WS63 当前路线';
+          return `${prefix}：${segmentCount} 段，速度 ${speed}，${loops === 0 ? '连续循环' : `${loops}圈`}`;
+        }
+        return `WS63 路线配置失败：${parts.length > 2 ? parts[2] : status}`;
+      }
       case 'AVOID': {
         let active = Number(parts[1]) === 1;
         let phase = Number(parts[2]);
@@ -2657,7 +3432,7 @@ export struct SsapClientPage {
         let blocked = Number(parts[9]) === 1;
         let distance = Number(parts[10]);
         let threshold = Number(parts[11]);
-        return `自动方形巡检${active ? '已启动' : '未启动'}，第 ${leg + 1}/4 边，${this.patrolPhaseName(phase)}，${this.statusName(status)}，${valid ? `距离 ${distance}/${threshold}mm` : '距离无效'}，${blocked ? '遇到障碍' : '前方安全'}，${this.inspectionAlarmSummary(alarmFlags)}，已完成 ${loop} 圈`;
+        return `路线巡检${active ? '已启动' : '未启动'}，第 ${leg + 1}/${this.routeSegmentCount} 段，${this.patrolPhaseName(phase)}，${this.statusName(status)}，${valid ? `距离 ${distance}/${threshold}mm` : '距离无效'}，${blocked ? '遇到障碍' : '前方安全'}，${this.inspectionAlarmSummary(alarmFlags)}，已完成 ${loop} 圈`;
       }
       case 'ERR':
         return `小车返回错误：${body}`;
@@ -2740,6 +3515,984 @@ export struct SsapClientPage {
     return baseUrl;
   }
 
+  routeNumberFromText(value: string, fallback: number, min: number, max: number): number {
+    let parsed = Number(value.trim());
+    if (parsed !== parsed) {
+      parsed = fallback;
+    }
+    if (parsed < min) {
+      return min;
+    }
+    if (parsed > max) {
+      return max;
+    }
+    return parsed;
+  }
+
+  routeIntFromText(value: string, fallback: number, min: number, max: number): number {
+    let parsed = Math.round(this.routeNumberFromText(value, fallback, min, max));
+    if (parsed < min) {
+      return min;
+    }
+    if (parsed > max) {
+      return max;
+    }
+    return parsed;
+  }
+
+  resetGraphicalRouteDefaults() {
+    this.routeSourceMode = 0;
+    this.routeImageUri = '';
+    this.routeCanvasAspectRatio = ROUTE_CANVAS_DEFAULT_ASPECT_RATIO;
+    this.routePoints = RoutePlanner.defaultSquare();
+    this.routeShapeKind = ROUTE_SHAPE_RECTANGLE;
+    this.routeNameText = '方形巡检';
+    this.selectedSavedRouteId = '';
+    this.routeTool = ROUTE_TOOL_SEGMENT;
+    this.routeLengthText = '25.2';
+    this.routeWs63SpeedText = '100';
+    this.routeLoopText = '1';
+    this.updateRoutePlanSummary();
+    setTimeout((): void => {
+      this.drawRouteCanvas();
+    }, 0);
+    this.routeStatusText = '已恢复 25.2 米默认方形路线，可通过星闪导入 WS63';
+    this.routeOnline = this.serviceReady;
+  }
+
+  clearRouteDrawing() {
+    this.routePoints = [];
+    this.routeShapeKind = ROUTE_SHAPE_NONE;
+    this.routePreviewPoints = [];
+    this.routeDragMode = ROUTE_DRAG_NONE;
+    this.selectedSavedRouteId = '';
+    this.updateRoutePlanSummary();
+    this.drawRouteCanvas();
+    this.routeStatusText = '路线已清空，底图保留';
+  }
+
+  routeToolHint(): string {
+    switch (this.routeTool) {
+      case ROUTE_TOOL_SEGMENT:
+        return '逐点：依次点击拐点添加线段，不需要一笔画完';
+      case ROUTE_TOOL_EDIT:
+        return '编辑：拖动圆点调整角点；拖动闭环内部可整体移动';
+      case ROUTE_TOOL_LINE:
+        return '直线：按住并拖动出一条新路线';
+      case ROUTE_TOOL_TRIANGLE:
+        return '三角：从一个角拖到对角来决定大小与位置';
+      case ROUTE_TOOL_RECTANGLE:
+        return '矩形：从一个角拖到对角来决定大小与位置';
+      case ROUTE_TOOL_START:
+        return '起点：点击需要作为出发位置的路线角点';
+      default:
+        return '终点：点击开环路线的新终点';
+    }
+  }
+
+  updateRouteCanvasArea(area: Area) {
+    let width = Number(area.width);
+    let height = Number(area.height);
+    if (width < 1 || height < 1 ||
+      (Math.abs(width - this.routeCanvasWidth) < 1 && Math.abs(height - this.routeCanvasHeight) < 1)) {
+      return;
+    }
+    this.routeCanvasWidth = width;
+    this.routeCanvasHeight = height;
+    setTimeout((): void => {
+      this.drawRouteCanvas();
+    }, 0);
+  }
+
+  routePointFromTouch(touch: TouchObject): RoutePointModel {
+    return {
+      x: RoutePlanner.clamp(touch.x / Math.max(1, this.routeCanvasWidth), 0, 1),
+      y: RoutePlanner.clamp(touch.y / Math.max(1, this.routeCanvasHeight), 0, 1)
+    };
+  }
+
+  handleRouteCanvasTouch(event: TouchEvent) {
+    if (event.changedTouches.length === 0) {
+      return;
+    }
+    let point = this.routePointFromTouch(event.changedTouches[0]);
+    if (event.type === TouchType.Down) {
+      this.beginRouteCanvasInteraction(point);
+      return;
+    }
+    if (event.type === TouchType.Move && this.routeDrawingActive) {
+      this.updateRouteCanvasInteraction(point);
+      return;
+    }
+    if ((event.type === TouchType.Up || event.type === TouchType.Cancel) && this.routeDrawingActive) {
+      this.finishRouteCanvasInteraction(point, event.type === TouchType.Cancel);
+    }
+  }
+
+  beginRouteCanvasInteraction(point: RoutePointModel) {
+    if (this.routeTool === ROUTE_TOOL_SEGMENT) {
+      this.appendRoutePoint(point);
+      return;
+    }
+    if (this.routeTool === ROUTE_TOOL_START) {
+      this.selectRouteStart(point);
+      return;
+    }
+    if (this.routeTool === ROUTE_TOOL_END) {
+      this.selectRouteEnd(point);
+      return;
+    }
+    if (this.routeTool === ROUTE_TOOL_EDIT) {
+      this.beginRouteEdit(point);
+      return;
+    }
+
+    this.routeDrawingActive = true;
+    this.routeToolAnchor = point;
+    this.routePreviewPoints = this.routePreviewFromAnchor(point, point);
+    this.drawRouteCanvas();
+  }
+
+  updateRouteCanvasInteraction(point: RoutePointModel) {
+    if (this.routeDragMode === ROUTE_DRAG_VERTEX) {
+      this.moveRouteVertex(point);
+      return;
+    }
+    if (this.routeDragMode === ROUTE_DRAG_SHAPE) {
+      this.moveRouteShape(point);
+      return;
+    }
+    if (this.routeToolAnchor === undefined) {
+      return;
+    }
+    this.routePreviewPoints = this.routePreviewFromAnchor(this.routeToolAnchor, point);
+    this.drawRouteCanvas();
+  }
+
+  finishRouteCanvasInteraction(point: RoutePointModel, cancelled: boolean) {
+    if (!cancelled && this.routeDragMode === ROUTE_DRAG_NONE && this.routeToolAnchor !== undefined) {
+      if (this.routeTool === ROUTE_TOOL_TRIANGLE) {
+        this.routeShapeKind = ROUTE_SHAPE_TRIANGLE;
+      } else if (this.routeTool === ROUTE_TOOL_RECTANGLE) {
+        this.routeShapeKind = ROUTE_SHAPE_RECTANGLE;
+      } else {
+        this.routeShapeKind = ROUTE_SHAPE_NONE;
+      }
+      this.commitRoutePoints(this.routePreviewFromAnchor(this.routeToolAnchor, point));
+    } else if (this.routeDragMode !== ROUTE_DRAG_NONE) {
+      this.commitRoutePoints(this.routePoints);
+    }
+    this.routeDrawingActive = false;
+    this.routeToolAnchor = undefined;
+    this.routePreviewPoints = [];
+    this.routeDragMode = ROUTE_DRAG_NONE;
+    this.routeEditIndex = -1;
+    this.routeLastDragPoint = undefined;
+    this.drawRouteCanvas();
+  }
+
+  routePreviewFromAnchor(anchor: RoutePointModel, point: RoutePointModel): Array<RoutePointModel> {
+    if (this.routeTool === ROUTE_TOOL_TRIANGLE) {
+      return this.createTriangleRoute(anchor, point);
+    }
+    if (this.routeTool === ROUTE_TOOL_RECTANGLE) {
+      return this.createRectangleRoute(anchor, point);
+    }
+    return [anchor, point];
+  }
+
+  appendRoutePoint(point: RoutePointModel) {
+    this.routeShapeKind = ROUTE_SHAPE_NONE;
+    let next = this.copyRoutePoints(this.routePoints);
+    if (this.routeIsClosed()) {
+      next.pop();
+    }
+    if (next.length > 0 && RoutePlanner.pointDistance(next[next.length - 1], point) < 0.012) {
+      return;
+    }
+    next.push(point);
+    this.commitRoutePoints(next);
+    this.routeStatusText = `已添加第 ${next.length} 个路线节点`;
+  }
+
+  undoRoutePoint() {
+    this.routeShapeKind = ROUTE_SHAPE_NONE;
+    let next = this.copyRoutePoints(this.routePoints);
+    if (next.length === 0) {
+      return;
+    }
+    if (this.routeIsClosed()) {
+      next.pop();
+      next.pop();
+      if (next.length >= 3) {
+        next.push({ x: next[0].x, y: next[0].y });
+      }
+    } else {
+      next.pop();
+    }
+    this.commitRoutePoints(next);
+    this.routeStatusText = '已撤销最后一个路线节点';
+  }
+
+  beginRouteEdit(point: RoutePointModel) {
+    if (this.routePoints.length < 2) {
+      this.routeStatusText = '请先使用逐点、直线或图形工具创建路线';
+      return;
+    }
+    let vertexIndex = this.findRouteVertex(point);
+    if (vertexIndex >= 0) {
+      this.routeDrawingActive = true;
+      this.routeDragMode = ROUTE_DRAG_VERTEX;
+      this.routeEditIndex = vertexIndex;
+      this.routeLastDragPoint = point;
+      return;
+    }
+    if (this.routeIsClosed() && this.isPointInsideClosedRoute(point)) {
+      this.routeDrawingActive = true;
+      this.routeDragMode = ROUTE_DRAG_SHAPE;
+      this.routeLastDragPoint = point;
+      return;
+    }
+    this.routeStatusText = '点住圆点可调整角点；点住闭环内部可整体移动';
+  }
+
+  findRouteVertex(point: RoutePointModel): number {
+    let count = this.routeIsClosed() ? this.routePoints.length - 1 : this.routePoints.length;
+    let hitRadius = 20 / Math.max(1, Math.min(this.routeCanvasWidth, this.routeCanvasHeight));
+    let nearestIndex = -1;
+    let nearestDistance = hitRadius;
+    for (let index = 0; index < count; index++) {
+      let distance = RoutePlanner.pointDistance(this.routePoints[index], point);
+      if (distance <= nearestDistance) {
+        nearestIndex = index;
+        nearestDistance = distance;
+      }
+    }
+    return nearestIndex;
+  }
+
+  moveRouteVertex(point: RoutePointModel) {
+    if (this.routeShapeKind === ROUTE_SHAPE_RECTANGLE && this.routeIsClosed() && this.routePoints.length === 5) {
+      this.routePoints = this.resizeRectangleRoute(point);
+      this.drawRouteCanvas();
+      return;
+    }
+    if (this.routeShapeKind === ROUTE_SHAPE_TRIANGLE && this.routeIsClosed() && this.routePoints.length === 4) {
+      this.routePoints = this.resizeTriangleRoute(point);
+      this.drawRouteCanvas();
+      return;
+    }
+    let next = this.copyRoutePoints(this.routePoints);
+    if (this.routeEditIndex < 0 || this.routeEditIndex >= next.length) {
+      return;
+    }
+    next[this.routeEditIndex] = point;
+    if (this.routeIsClosed() && this.routeEditIndex === 0) {
+      next[next.length - 1] = { x: point.x, y: point.y };
+    }
+    this.routePoints = next;
+    this.drawRouteCanvas();
+  }
+
+  resizeRectangleRoute(point: RoutePointModel): Array<RoutePointModel> {
+    let oppositeIndex = (this.routeEditIndex + 2) % 4;
+    let opposite = this.routePoints[oppositeIndex];
+    return this.createRectangleRoute(opposite, point);
+  }
+
+  resizeTriangleRoute(point: RoutePointModel): Array<RoutePointModel> {
+    let apex = this.routePoints[0];
+    let baseLeft = this.routePoints[1];
+    let baseRight = this.routePoints[2];
+    let left = Math.min(baseLeft.x, baseRight.x);
+    let right = Math.max(baseLeft.x, baseRight.x);
+    let top = apex.y;
+    let bottom = Math.max(baseLeft.y, baseRight.y);
+    if (this.routeEditIndex === 0) {
+      let halfWidth = Math.max(0.02, (right - left) / 2);
+      left = RoutePlanner.clamp(point.x - halfWidth, 0.02, 0.98);
+      right = RoutePlanner.clamp(point.x + halfWidth, 0.02, 0.98);
+      top = point.y;
+    } else if (this.routeEditIndex === 1) {
+      left = point.x;
+      bottom = point.y;
+    } else {
+      right = point.x;
+      bottom = point.y;
+    }
+    return this.createTriangleRoute({ x: left, y: top }, { x: right, y: bottom });
+  }
+
+  moveRouteShape(point: RoutePointModel) {
+    if (this.routeLastDragPoint === undefined) {
+      return;
+    }
+    let dx = point.x - this.routeLastDragPoint.x;
+    let dy = point.y - this.routeLastDragPoint.y;
+    let count = this.routeIsClosed() ? this.routePoints.length - 1 : this.routePoints.length;
+    let minX = 1;
+    let maxX = 0;
+    let minY = 1;
+    let maxY = 0;
+    for (let index = 0; index < count; index++) {
+      minX = Math.min(minX, this.routePoints[index].x);
+      maxX = Math.max(maxX, this.routePoints[index].x);
+      minY = Math.min(minY, this.routePoints[index].y);
+      maxY = Math.max(maxY, this.routePoints[index].y);
+    }
+    dx = RoutePlanner.clamp(dx, -minX, 1 - maxX);
+    dy = RoutePlanner.clamp(dy, -minY, 1 - maxY);
+    let next = this.copyRoutePoints(this.routePoints);
+    for (let index = 0; index < count; index++) {
+      next[index] = { x: next[index].x + dx, y: next[index].y + dy };
+    }
+    if (this.routeIsClosed()) {
+      next[next.length - 1] = { x: next[0].x, y: next[0].y };
+    }
+    this.routeLastDragPoint = { x: this.routeLastDragPoint.x + dx, y: this.routeLastDragPoint.y + dy };
+    this.routePoints = next;
+    this.drawRouteCanvas();
+  }
+
+  isPointInsideClosedRoute(point: RoutePointModel): boolean {
+    if (!this.routeIsClosed()) {
+      return false;
+    }
+    let inside = false;
+    for (let index = 0, previous = this.routePoints.length - 2; index < this.routePoints.length - 1; previous = index++) {
+      let currentPoint = this.routePoints[index];
+      let previousPoint = this.routePoints[previous];
+      let crosses = (currentPoint.y > point.y) !== (previousPoint.y > point.y);
+      if (crosses && point.x < (previousPoint.x - currentPoint.x) * (point.y - currentPoint.y) /
+        (previousPoint.y - currentPoint.y) + currentPoint.x) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  }
+
+  routeIsClosed(): boolean {
+    return this.routePoints.length >= 4 &&
+      RoutePlanner.pointDistance(this.routePoints[0], this.routePoints[this.routePoints.length - 1]) <= 0.02;
+  }
+
+  commitRoutePoints(points: Array<RoutePointModel>) {
+    this.routePoints = RoutePlanner.simplify(points, 0.035);
+    this.selectedSavedRouteId = '';
+    this.updateRoutePlanSummary();
+    this.drawRouteCanvas();
+  }
+
+  createTriangleRoute(first: RoutePointModel, second: RoutePointModel): Array<RoutePointModel> {
+    let left = RoutePlanner.clamp(Math.min(first.x, second.x), 0.02, 0.98);
+    let right = RoutePlanner.clamp(Math.max(first.x, second.x), 0.02, 0.98);
+    let top = RoutePlanner.clamp(Math.min(first.y, second.y), 0.02, 0.98);
+    let bottom = RoutePlanner.clamp(Math.max(first.y, second.y), 0.02, 0.98);
+    let centerX = (left + right) / 2;
+    return [
+      { x: centerX, y: top },
+      { x: left, y: bottom },
+      { x: right, y: bottom },
+      { x: centerX, y: top }
+    ];
+  }
+
+  createRectangleRoute(first: RoutePointModel, second: RoutePointModel): Array<RoutePointModel> {
+    let left = RoutePlanner.clamp(Math.min(first.x, second.x), 0.02, 0.98);
+    let right = RoutePlanner.clamp(Math.max(first.x, second.x), 0.02, 0.98);
+    let top = RoutePlanner.clamp(Math.min(first.y, second.y), 0.02, 0.98);
+    let bottom = RoutePlanner.clamp(Math.max(first.y, second.y), 0.02, 0.98);
+    return [
+      { x: left, y: top },
+      { x: right, y: top },
+      { x: right, y: bottom },
+      { x: left, y: bottom },
+      { x: left, y: top }
+    ];
+  }
+
+  reverseRouteDirection() {
+    this.commitRoutePoints(RoutePlanner.reverseRoute(this.routePoints));
+  }
+
+  toggleRouteClosed() {
+    if (this.routePoints.length < 2) {
+      return;
+    }
+    if (this.routeIsClosed()) {
+      this.commitRoutePoints(this.routePoints.slice(0, this.routePoints.length - 1));
+    } else {
+      let points = this.routePoints.slice();
+      points.push({ x: points[0].x, y: points[0].y });
+      this.commitRoutePoints(points);
+    }
+  }
+
+  selectRouteStart(point: RoutePointModel) {
+    if (this.routePoints.length < 2) {
+      this.routeStatusText = '请先绘制至少一段路线';
+      return;
+    }
+    if (this.routeIsClosed()) {
+      this.commitRoutePoints(RoutePlanner.rotateClosedRouteToPoint(this.routePoints, point));
+    } else {
+      let firstDistance = RoutePlanner.pointDistance(this.routePoints[0], point);
+      let lastDistance = RoutePlanner.pointDistance(this.routePoints[this.routePoints.length - 1], point);
+      if (lastDistance < firstDistance) {
+        this.reverseRouteDirection();
+      }
+    }
+  }
+
+  selectRouteEnd(point: RoutePointModel) {
+    if (this.routePoints.length < 2) {
+      this.routeStatusText = '请先绘制至少一段路线';
+      return;
+    }
+    if (this.routeIsClosed()) {
+      this.routeStatusText = '闭环路线的终点与起点重合';
+      return;
+    }
+    let points = this.routePoints.slice();
+    points[points.length - 1] = point;
+    this.commitRoutePoints(points);
+  }
+
+  drawRouteCanvas() {
+    let context = this.routeCanvasContext;
+    let width = Math.max(1, this.routeCanvasWidth);
+    let height = Math.max(1, this.routeCanvasHeight);
+    context.clearRect(0, 0, width, height);
+    if (this.routeImageUri.length === 0) {
+      let grid = Math.max(28, Math.round(Math.min(width, height) / 9));
+      context.strokeStyle = '#ffe2e8f0';
+      context.lineWidth = 1;
+      for (let x = grid; x < width; x += grid) {
+        context.beginPath();
+        context.moveTo(x, 0);
+        context.lineTo(x, height);
+        context.stroke();
+      }
+      for (let y = grid; y < height; y += grid) {
+        context.beginPath();
+        context.moveTo(0, y);
+        context.lineTo(width, y);
+        context.stroke();
+      }
+    }
+
+    if (this.routePreviewPoints.length >= 2) {
+      this.drawRoutePolyline(context, this.routePreviewPoints, '#ff38bdf8', 3);
+    }
+    if (this.routePoints.length === 0) {
+      context.fillStyle = '#ff94a3b8';
+      context.font = '13px sans-serif';
+      context.textAlign = 'center';
+      context.fillText('使用“逐点”依次点击拐点，或拖动图形工具创建路线', width / 2, height / 2);
+      return;
+    }
+
+    this.drawRoutePolyline(context, this.routePoints, '#ff0f766e', 5);
+    let closed = this.routeIsClosed();
+    let pointCount = closed ? this.routePoints.length - 1 : this.routePoints.length;
+    for (let index = 0; index < pointCount; index++) {
+      let point = this.routePoints[index];
+      context.fillStyle = '#ffffffff';
+      context.strokeStyle = index === this.routeEditIndex ? '#ff0ea5e9' : '#ff0f766e';
+      context.lineWidth = 2;
+      context.beginPath();
+      context.arc(point.x * width, point.y * height, index === this.routeEditIndex ? 7 : 5, 0, Math.PI * 2);
+      context.fill();
+      context.stroke();
+    }
+
+    let start = this.routePoints[0];
+    let end = this.routePoints[this.routePoints.length - 1];
+    context.fillStyle = '#ff16a34a';
+    context.beginPath();
+    context.arc(start.x * width, start.y * height, 8, 0, Math.PI * 2);
+    context.fill();
+    context.fillStyle = '#ffffffff';
+    context.font = 'bold 10px sans-serif';
+    context.textAlign = 'center';
+    context.fillText('S', start.x * width, start.y * height + 3);
+    if (!closed) {
+      context.fillStyle = '#ffdc2626';
+      context.beginPath();
+      context.arc(end.x * width, end.y * height, 7, 0, Math.PI * 2);
+      context.fill();
+      context.fillStyle = '#ffffffff';
+      context.font = 'bold 9px sans-serif';
+      context.fillText('E', end.x * width, end.y * height + 3);
+    }
+  }
+
+  drawRoutePolyline(context: CanvasRenderingContext2D, points: Array<RoutePointModel>, color: string, lineWidth: number) {
+    if (points.length < 2) {
+      return;
+    }
+    let width = Math.max(1, this.routeCanvasWidth);
+    let height = Math.max(1, this.routeCanvasHeight);
+    context.strokeStyle = color;
+    context.lineWidth = lineWidth;
+    context.beginPath();
+    context.moveTo(points[0].x * width, points[0].y * height);
+    for (let index = 1; index < points.length; index++) {
+      context.lineTo(points[index].x * width, points[index].y * height);
+    }
+    context.stroke();
+  }
+
+  async updateRouteImageAspectRatio(uri: string) {
+    if (uri.length === 0) {
+      this.routeCanvasAspectRatio = ROUTE_CANVAS_DEFAULT_ASPECT_RATIO;
+      return;
+    }
+    try {
+      let aspectRatio = await RouteImageRecognizer.getAspectRatio(uri);
+      if (this.routeImageUri === uri) {
+        this.routeCanvasAspectRatio = aspectRatio;
+      }
+    } catch (err) {
+      this.routeCanvasAspectRatio = ROUTE_CANVAS_DEFAULT_ASPECT_RATIO;
+      hilog.warn(this.domainId, this.logTag, `read route image size failed: ${(err as Error).message}`);
+    }
+    setTimeout((): void => {
+      this.drawRouteCanvas();
+    }, 0);
+  }
+
+  async selectRouteImage() {
+    let picker = new photoAccessHelper.PhotoViewPicker();
+    let options = new photoAccessHelper.PhotoSelectOptions();
+    options.MIMEType = photoAccessHelper.PhotoViewMIMETypes.IMAGE_TYPE;
+    options.maxSelectNumber = 1;
+    try {
+      let result = await picker.select(options);
+      if (result.photoUris.length === 0) {
+        return;
+      }
+      this.routeSourceMode = 1;
+      this.routeImageUri = result.photoUris[0];
+      this.routeRecognitionBusy = true;
+      this.routeStatusText = '地图已加载，画布正在按原始比例适配';
+      this.routePoints = [];
+      this.routeShapeKind = ROUTE_SHAPE_NONE;
+      this.selectedSavedRouteId = '';
+      await this.updateRouteImageAspectRatio(this.routeImageUri);
+      this.routeRecognitionBusy = false;
+      this.updateRoutePlanSummary();
+      setTimeout((): void => {
+        this.drawRouteCanvas();
+      }, 0);
+      this.routeDetailText = '底图按原始比例显示；使用逐点模式依次标注拐点即可';
+    } catch (err) {
+      this.routeRecognitionBusy = false;
+      let error = err as Error;
+      this.routeStatusText = '地图导入失败';
+      this.routeDetailText = error.message;
+    }
+  }
+
+  currentRoutePlan(): RoutePlanModel {
+    let totalMeters = this.routeNumberFromText(this.routeLengthText, 25.2, 0.5, 200);
+    let speed = this.routeIntFromText(this.routeWs63SpeedText, 100, 30, 100);
+    let calibration: RouteCalibrationModel = {
+      secondsPerMeterAtCruiseSpeed: this.routeNumberFromText(this.routeSecondsPerMeterText, 2.8, 0.15, 5),
+      ninetyDegreeTurnMsAtCruiseSpeed: this.routeIntFromText(this.routeNinetyDegreeTurnMsText, 686, 200, 4000)
+    };
+    return RoutePlanner.buildPlan(this.routePoints, totalMeters, speed, calibration);
+  }
+
+  updateRoutePlanSummary() {
+    let plan = this.currentRoutePlan();
+    this.routePoints = plan.points;
+    this.routeSegmentCount = plan.legs.length;
+    this.routeEstimateText = plan.legs.length === 0 ? '尚未绘制' :
+      `${plan.legs.length} 段 · 约 ${plan.estimatedSeconds.toFixed(1)} 秒`;
+    this.updateRouteTerminalsText();
+    this.syncGraphicalRouteDraft();
+  }
+
+  updateRouteTerminalsText() {
+    if (this.routePoints.length < 2) {
+      this.routeTerminalsText = '起点和终点待标定';
+      return;
+    }
+    if (this.routeIsClosed()) {
+      this.routeTerminalsText = '闭环路线：S 为起跑点，终点回到 S；可用“起点”工具重设起跑位置';
+      return;
+    }
+    this.routeTerminalsText = '开放路线：绿色 S 为起点，红色 E 为终点；可用起点/终点工具调整';
+  }
+
+  copyRoutePoints(points: Array<RoutePointModel>): Array<RoutePointModel> {
+    let copied = new Array<RoutePointModel>();
+    for (let index = 0; index < points.length; index++) {
+      copied.push({ x: points[index].x, y: points[index].y });
+    }
+    return copied;
+  }
+
+  inferRouteShapeKind(points: Array<RoutePointModel>): number {
+    if (points.length === 4 && RoutePlanner.pointDistance(points[0], points[3]) <= 0.02) {
+      return ROUTE_SHAPE_TRIANGLE;
+    }
+    if (points.length === 5 && RoutePlanner.pointDistance(points[0], points[4]) <= 0.02) {
+      return ROUTE_SHAPE_RECTANGLE;
+    }
+    return ROUTE_SHAPE_NONE;
+  }
+
+  async ensureRoutePreferences(): Promise<preferences.Preferences> {
+    if (this.routePreferences !== undefined) {
+      return this.routePreferences;
+    }
+    let context = this.getUIContext().getHostContext();
+    if (context === undefined) {
+      throw new Error('Route library context is unavailable');
+    }
+    this.routePreferences = await preferences.getPreferences(context, ROUTE_LIBRARY_PREFERENCES);
+    return this.routePreferences;
+  }
+
+  async loadRouteLibrary() {
+    try {
+      let store = await this.ensureRoutePreferences();
+      let raw = await store.get(ROUTE_LIBRARY_KEY, '[]');
+      if (typeof raw !== 'string') {
+        return;
+      }
+      let restored = JSON.parse(raw) as Array<SavedRouteEntry>;
+      if (!Array.isArray(restored)) {
+        return;
+      }
+      let validEntries = new Array<SavedRouteEntry>();
+      for (let index = 0; index < restored.length; index++) {
+        let entry = restored[index];
+        if (entry === undefined || typeof entry.id !== 'string' || typeof entry.name !== 'string' ||
+          !Array.isArray(entry.points) || entry.points.length < 2) {
+          continue;
+        }
+        validEntries.push(entry);
+      }
+      this.savedRouteEntries = validEntries;
+    } catch (err) {
+      hilog.warn(this.domainId, this.logTag, `route library load ignored: ${(err as Error).message}`);
+    }
+  }
+
+  async persistRouteLibrary() {
+    try {
+      let store = await this.ensureRoutePreferences();
+      await store.put(ROUTE_LIBRARY_KEY, JSON.stringify(this.savedRouteEntries));
+      await store.flush();
+    } catch (err) {
+      this.routeStatusText = '路线已编辑，但本地保存失败';
+      hilog.warn(this.domainId, this.logTag, `route library save failed: ${(err as Error).message}`);
+    }
+  }
+
+  saveCurrentRoute() {
+    if (this.routePoints.length < 2) {
+      this.routeStatusText = '请先绘制至少一段路线';
+      return;
+    }
+    let name = this.routeNameText.trim();
+    if (name.length === 0) {
+      name = `路线 ${this.savedRouteEntries.length + 1}`;
+      this.routeNameText = name;
+    }
+    let id = this.selectedSavedRouteId.length > 0 ? this.selectedSavedRouteId : `route_${Date.now()}`;
+    let entry: SavedRouteEntry = {
+      id: id,
+      name: name,
+      imageUri: this.routeImageUri,
+      points: this.copyRoutePoints(this.routePoints),
+      lengthText: this.routeLengthText,
+      speedText: this.routeWs63SpeedText,
+      loopText: this.routeLoopText,
+      secondsPerMeterText: this.routeSecondsPerMeterText,
+      ninetyDegreeTurnMsText: this.routeNinetyDegreeTurnMsText,
+      shapeKind: this.routeShapeKind,
+      savedAt: this.nowText()
+    };
+    let next = this.savedRouteEntries.slice();
+    let existingIndex = next.findIndex((candidate: SavedRouteEntry) => candidate.id === id);
+    if (existingIndex >= 0) {
+      next[existingIndex] = entry;
+    } else {
+      next.push(entry);
+    }
+    this.savedRouteEntries = next;
+    this.selectedSavedRouteId = id;
+    this.persistRouteLibrary();
+    this.routeStatusText = `路线“${name}”已保存`;
+  }
+
+  selectSavedRoute(id: string) {
+    let entry = this.savedRouteEntries.find((candidate: SavedRouteEntry) => candidate.id === id);
+    if (entry === undefined) {
+      return;
+    }
+    this.selectedSavedRouteId = entry.id;
+    this.routeNameText = entry.name;
+    this.routeImageUri = entry.imageUri;
+    this.routeSourceMode = entry.imageUri.length > 0 ? 1 : 0;
+    this.updateRouteImageAspectRatio(entry.imageUri);
+    this.routePoints = this.copyRoutePoints(entry.points);
+    this.routeShapeKind = entry.shapeKind === undefined ? this.inferRouteShapeKind(entry.points) : entry.shapeKind;
+    this.routeLengthText = entry.lengthText;
+    this.routeWs63SpeedText = entry.speedText;
+    this.routeLoopText = entry.loopText;
+    this.routeSecondsPerMeterText = entry.secondsPerMeterText;
+    this.routeNinetyDegreeTurnMsText = entry.ninetyDegreeTurnMsText;
+    this.updateRoutePlanSummary();
+    setTimeout((): void => {
+      this.drawRouteCanvas();
+    }, 0);
+    this.routeStatusText = `已选择路线“${entry.name}”`;
+  }
+
+  deleteSelectedRoute() {
+    if (this.selectedSavedRouteId.length === 0) {
+      return;
+    }
+    let entry = this.savedRouteEntries.find((candidate: SavedRouteEntry) => candidate.id === this.selectedSavedRouteId);
+    this.savedRouteEntries = this.savedRouteEntries.filter(
+      (candidate: SavedRouteEntry) => candidate.id !== this.selectedSavedRouteId);
+    this.selectedSavedRouteId = '';
+    this.persistRouteLibrary();
+    this.routeStatusText = entry === undefined ? '已删除路线' : `已删除路线“${entry.name}”`;
+  }
+
+  syncGraphicalRouteDraft(): string {
+    let plan = this.currentRoutePlan();
+    let speed = this.routeIntFromText(this.routeWs63SpeedText, 100, 30, 100);
+    let loops = this.routeIntFromText(this.routeLoopText, 1, 0, 20);
+    let normalizedSpeed = Number((speed * 0.0024).toFixed(3));
+    let origin: RoutePointModel = { x: 0, y: 0 };
+    if (plan.points.length > 0) {
+      origin = plan.points[0];
+    }
+    let metresPerCanvasUnit = plan.drawingLength > 0 ? plan.totalMeters / plan.drawingLength : 0;
+    let waypoints = new Array<RouteWaypointDraft>();
+    let steps = new Array<RouteStepDraft>();
+    for (let index = 0; index < plan.points.length; index++) {
+      waypoints.push({
+        id: `P${index + 1}`,
+        name: index === 0 ? 'Start' : `Point ${index + 1}`,
+        x_m: Number(((plan.points[index].x - origin.x) * metresPerCanvasUnit).toFixed(3)),
+        y_m: Number(((plan.points[index].y - origin.y) * metresPerCanvasUnit).toFixed(3))
+      });
+    }
+    for (let index = 0; index < plan.legs.length; index++) {
+      let leg = plan.legs[index];
+      steps.push({ id: `move_${index + 1}`, action: 'move', speed: normalizedSpeed,
+        duration_s: Number((leg.forwardMs / 1000).toFixed(3)) });
+      if (leg.turnDirection !== 0 && leg.turnMs > 0) {
+        steps.push({ id: `turn_${index + 1}`, action: 'turn',
+          direction: leg.turnDirection === 1 ? 'left' : 'right', speed: 0.5,
+          duration_s: Number((leg.turnMs / 1000).toFixed(3)) });
+      }
+    }
+    let route: RouteImportPayload = {
+      name: 'phone-graphical-route',
+      description: 'Human-annotated route synchronised to the Raspberry Pi MapBrain for both app and voice patrol.',
+      default_speed: normalizedSpeed,
+      default_turn_speed: 0.5,
+      default_loops: loops,
+      calibration: {
+        distance_unit: 'm',
+        time_unit: 's',
+        turn_time_unit: 'ms',
+        baseline_command_speed: 100,
+        linear_left: normalizedSpeed,
+        linear_right: normalizedSpeed,
+        seconds_per_meter: this.routeNumberFromText(this.routeSecondsPerMeterText, 2.8, 0.15, 5),
+        turn_left: 0.5,
+        turn_right: -0.5,
+        ninety_degree_turn_ms: this.routeIntFromText(this.routeNinetyDegreeTurnMsText, 686, 200, 4000)
+      },
+      notes: [
+        'The phone simplifies the route to no more than 12 segments.',
+        'The Raspberry Pi MapBrain is the single automatic patrol executor for app and voice control.',
+        'Route length is the full path length; waypoint coordinates are metres relative to the start point.',
+        `Distance calibration is ${this.routeSecondsPerMeterText} s/m at speed 100 (L=R=0.24).`,
+        `Turn calibration is ${this.routeNinetyDegreeTurnMsText} ms for 90 degrees at speed 100.`
+      ],
+      waypoints: waypoints,
+      steps: steps
+    };
+    this.routeJsonDraft = JSON.stringify(route, null, 2);
+    this.routeDetailText = `路线 ${plan.totalMeters.toFixed(1)} 米，${plan.legs.length} 段，速度 ${speed}，` +
+      `${loops === 0 ? '连续循环' : `${loops}圈`}，标定 ${this.routeSecondsPerMeterText}s/米、90° ${this.routeNinetyDegreeTurnMsText}ms`;
+    return this.routeJsonDraft;
+  }
+
+  buildWs63RouteCommands(): Array<string> {
+    let plan = this.currentRoutePlan();
+    let speed = this.routeIntFromText(this.routeWs63SpeedText, 100, 30, 100);
+    let loops = this.routeIntFromText(this.routeLoopText, 1, 0, 20);
+    if (!plan.closed && loops !== 1) {
+      loops = 1;
+      this.routeLoopText = '1';
+      this.routeDetailText = '开放路线只能安全执行一次；闭合路线才可设置多圈或连续循环';
+    }
+    let commands = new Array<string>();
+    if (plan.legs.length === 0) {
+      return commands;
+    }
+    commands.push(`R0,${plan.legs.length},${speed},${loops}`);
+    for (let index = 0; index < plan.legs.length; index++) {
+      let leg: RouteLegModel = plan.legs[index];
+      commands.push(`R1,${index},${leg.forwardMs},${leg.turnDirection},${leg.turnMs}`);
+    }
+    commands.push('R2');
+    this.syncGraphicalRouteDraft();
+    return commands;
+  }
+
+  sendWs63RouteConfig(startAfterUpload: boolean = false) {
+    if (!this.serviceReady) {
+      this.routeOnline = false;
+      this.routeStatusText = '请先通过星闪连接小车';
+      return;
+    }
+    let commands = this.buildWs63RouteCommands();
+    if (commands.length === 0) {
+      this.routeStatusText = '请先手绘路线或导入可识别的路线图';
+      return;
+    }
+    this.cancelRouteUpload();
+    this.routeUploadCommands = commands;
+    this.routeUploadIndex = 0;
+    this.routeUploadRetries = 0;
+    this.routeStartAfterUpload = startAfterUpload;
+    this.routeImportBusy = true;
+    this.routeControlBusy = startAfterUpload;
+    this.routeOnline = true;
+    this.routeStatusText = `正在通过星闪导入 0/${commands.length - 2} 段`;
+    this.sendCurrentRouteUploadCommand();
+  }
+
+  sendCurrentRouteUploadCommand() {
+    if (this.routeUploadIndex < 0 || this.routeUploadIndex >= this.routeUploadCommands.length) {
+      return;
+    }
+    this.writeCommand(this.routeUploadCommands[this.routeUploadIndex], true, false);
+    if (this.routeUploadTimer >= 0) {
+      clearTimeout(this.routeUploadTimer);
+    }
+    this.routeUploadTimer = setTimeout(() => {
+      if (this.routeUploadRetries < 2) {
+        this.routeUploadRetries++;
+        this.routeStatusText = `星闪应答超时，正在重试 ${this.routeUploadRetries}/2`;
+        this.sendCurrentRouteUploadCommand();
+      } else {
+        this.failRouteUpload('星闪路线分包应答超时');
+      }
+    }, 1200);
+  }
+
+  handleRouteUploadResponse(status: string, parts: Array<string>) {
+    if (this.routeUploadIndex < 0) {
+      return;
+    }
+    if (status === 'ERR') {
+      this.failRouteUpload(`WS63 拒绝路线分包：${parts.length > 2 ? parts[2] : '未知错误'}`);
+      return;
+    }
+    let lastIndex = this.routeUploadCommands.length - 1;
+    let matched = (this.routeUploadIndex === 0 && status === 'BEGIN') ||
+      (this.routeUploadIndex > 0 && this.routeUploadIndex < lastIndex && status === 'SEG' &&
+        Number(parts[2]) === this.routeUploadIndex - 1) ||
+      (this.routeUploadIndex === lastIndex && status === 'OK');
+    if (!matched) {
+      return;
+    }
+    if (this.routeUploadTimer >= 0) {
+      clearTimeout(this.routeUploadTimer);
+      this.routeUploadTimer = -1;
+    }
+    if (this.routeUploadIndex === lastIndex) {
+      let shouldStart = this.routeStartAfterUpload;
+      this.routeUploadIndex = -1;
+      this.routeImportBusy = false;
+      this.routeControlBusy = false;
+      this.routeStatusText = 'WS63 已校验并保存完整路线';
+      if (shouldStart) {
+        setTimeout(() => {
+          this.writeCommand('P', true, true);
+          this.inspectionEnabled = true;
+          this.routeStatusText = '自定义路线巡检已启动';
+        }, 180);
+      }
+      return;
+    }
+    this.routeUploadIndex++;
+    this.routeUploadRetries = 0;
+    let completedSegments = Math.max(0, this.routeUploadIndex - 1);
+    this.routeStatusText = `正在通过星闪导入 ${completedSegments}/${this.routeSegmentCount} 段`;
+    setTimeout((): void => {
+      this.sendCurrentRouteUploadCommand();
+    }, ROUTE_UPLOAD_GAP_MS);
+  }
+
+  failRouteUpload(reason: string) {
+    if (this.routeUploadTimer >= 0) {
+      clearTimeout(this.routeUploadTimer);
+      this.routeUploadTimer = -1;
+    }
+    this.routeUploadIndex = -1;
+    this.routeImportBusy = false;
+    this.routeControlBusy = false;
+    this.routeOnline = false;
+    this.routeStatusText = reason;
+  }
+
+  cancelRouteUpload() {
+    if (this.routeUploadTimer >= 0) {
+      clearTimeout(this.routeUploadTimer);
+      this.routeUploadTimer = -1;
+    }
+    this.routeUploadIndex = -1;
+    this.routeUploadCommands = [];
+    this.routeImportBusy = false;
+    this.routeControlBusy = false;
+  }
+
+  queryWs63RouteConfig() {
+    if (!this.serviceReady) {
+      this.routeOnline = false;
+      this.routeStatusText = '请先通过星闪连接小车';
+      return;
+    }
+    this.routeOnline = true;
+    this.routeStatusText = '正在读取 WS63 路线配置';
+    this.writeCommand('R?', true, false);
+  }
+
+  startWs63RoutePatrol() {
+    if (!this.serviceReady) {
+      this.routeOnline = false;
+      this.routeStatusText = '请先通过星闪连接小车';
+      return;
+    }
+    if (this.routeControlBusy) {
+      return;
+    }
+    this.routeStatusText = '正在导入路线并启动 WS63 巡检';
+    this.sendWs63RouteConfig(true);
+  }
+
+  stopWs63RoutePatrol() {
+    this.cancelRouteUpload();
+    this.inspectionEnabled = false;
+    this.routeStatusText = '已停止路线巡检';
+    this.writeCommand('S');
+  }
+
   applyRouteBaseUrl() {
     let next = this.normalizeRouteBaseUrl(this.routeBaseDraft);
     if (next.length === 0) {
@@ -2786,7 +4539,11 @@ export struct SsapClientPage {
     return '';
   }
 
-  importRouteToPi() {
+  importRouteToPi(startAfterImport: boolean = false) {
+    if (this.routeImportBusy || this.routeControlBusy) {
+      return;
+    }
+    this.syncGraphicalRouteDraft();
     let route: RouteImportPayload;
     try {
       route = JSON.parse(this.routeJsonDraft) as RouteImportPayload;
@@ -2804,13 +4561,19 @@ export struct SsapClientPage {
     }
 
     this.routeImportBusy = true;
+    this.routeControlBusy = startAfterImport;
     this.postRouteRequest('/route/import', this.routeJsonDraft, '路线导入', (payload: RouteServicePayload) => {
       this.updateRouteStatusFromPayload(payload);
-      this.routeStatusText = '路线已导入树莓派';
-      this.showInspectionToast('路线导入成功', 1600);
-      this.fetchCurrentRoute(false);
+      this.routeStatusText = '路线已同步至树莓派';
+      this.showInspectionToast('路线同步成功', 1600);
+      if (startAfterImport) {
+        this.startImportedRoute();
+      } else {
+        this.fetchCurrentRoute(false);
+      }
     }, () => {
       this.routeImportBusy = false;
+      this.routeControlBusy = false;
     });
   }
 
@@ -2861,7 +4624,9 @@ export struct SsapClientPage {
       return;
     }
     this.routeControlBusy = true;
-    this.postRouteRequest('/route/start', '{"loops":1,"speed_scale":1.0}', '启动路线', (payload: RouteServicePayload) => {
+    let loops = this.routeIntFromText(this.routeLoopText, 1, 0, 20);
+    let startRequest = JSON.stringify({ loops: loops, speed_scale: 1.0 });
+    this.postRouteRequest('/route/start', startRequest, '启动路线', (payload: RouteServicePayload) => {
       this.updateRouteStatusFromPayload(payload);
       this.routeStatusText = '路线巡航已启动';
       this.showInspectionToast('路线巡航已启动', 1600);
@@ -2875,6 +4640,10 @@ export struct SsapClientPage {
       return;
     }
     this.routeControlBusy = true;
+    this.inspectionEnabled = false;
+    if (this.serviceReady) {
+      this.writeCommand('S', true, false);
+    }
     this.postRouteRequest('/route/stop', '{}', '停止路线', (payload: RouteServicePayload) => {
       this.updateRouteStatusFromPayload(payload);
       this.routeStatusText = '路线巡航已停止';

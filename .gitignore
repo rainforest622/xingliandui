@@ -19,6 +19,10 @@ artifacts/
 # Local device dumps/screenshots generated during HDC debugging.
 nearlink_layout*.json
 nearlink_screen.png
+.codex-ssh-askpass.cmd
+
+# Competition document illustrations are not source or runtime dependencies.
+补充图片/
 
 # Packaged historical workspace snapshots should not be committed again.
 *.zip

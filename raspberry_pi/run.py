@@ -203,7 +203,7 @@ class RequestHandler(server.BaseHTTPRequestHandler):
         self.end_headers()
         while True:
             frame, _fps = self.server.capture.read()
-            if frame is None:
+            if frame is None or not self.server.capture.frame_is_fresh:
                 if self.server.capture.active_backend == "error":
                     return
                 time.sleep(0.02)

@@ -42,6 +42,32 @@ typedef struct {
     uint32_t max_loops;
 } robot_mvp_patrol_config_t;
 
+typedef struct {
+    uint8_t left_percent;
+    uint8_t right_percent;
+} robot_mvp_wheel_calibration_t;
+
+#define ROBOT_MVP_ROUTE_MAX_SEGMENTS 12U
+
+typedef enum {
+    ROBOT_MVP_ROUTE_TURN_NONE = 0,
+    ROBOT_MVP_ROUTE_TURN_LEFT = 1,
+    ROBOT_MVP_ROUTE_TURN_RIGHT = 2
+} robot_mvp_route_turn_t;
+
+typedef struct {
+    uint32_t forward_ms;
+    uint32_t turn_ms;
+    uint8_t turn_direction;
+} robot_mvp_route_segment_t;
+
+typedef struct {
+    uint8_t segment_count;
+    uint8_t speed;
+    uint32_t max_loops;
+    robot_mvp_route_segment_t segments[ROBOT_MVP_ROUTE_MAX_SEGMENTS];
+} robot_mvp_route_config_t;
+
 typedef enum {
     ROBOT_MONITOR_ALARM_NONE = 0,
     ROBOT_MONITOR_ALARM_ENV_INVALID = 1U << 0,
@@ -75,6 +101,10 @@ robot_status_t robot_mvp_control_start_avoid(robot_mvp_avoid_result_t *result);
 robot_status_t robot_mvp_control_start_avoid_test(robot_mvp_avoid_result_t *result);
 bool robot_mvp_control_config_patrol(const robot_mvp_patrol_config_t *config);
 void robot_mvp_control_get_patrol_config(robot_mvp_patrol_config_t *config);
+bool robot_mvp_control_config_route(const robot_mvp_route_config_t *config);
+void robot_mvp_control_get_route_config(robot_mvp_route_config_t *config);
+bool robot_mvp_control_set_wheel_calibration(const robot_mvp_wheel_calibration_t *calibration);
+void robot_mvp_control_get_wheel_calibration(robot_mvp_wheel_calibration_t *calibration);
 robot_status_t robot_mvp_control_start_patrol(robot_mvp_patrol_result_t *result);
 void robot_mvp_control_get_patrol(robot_mvp_patrol_result_t *result);
 void robot_mvp_control_get_state(robot_mvp_state_t *state);

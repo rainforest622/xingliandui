@@ -2,12 +2,15 @@
 
 #include <stdio.h>
 
-#include "uart.h"
+#include "soc_osal.h"
 
-#define ROBOT_ROVER_UART_BUS UART_BUS_0
 #define ROBOT_ROVER_MAX_SPEED_CENTI 50
-#define ROBOT_ROVER_LEFT_WHEEL_SCALE_NUM 100
-#define ROBOT_ROVER_LEFT_WHEEL_SCALE_DEN 100
+#define ROBOT_ROVER_WHEEL_SCALE_MIN 70U
+#define ROBOT_ROVER_WHEEL_SCALE_MAX 120U
+#define ROBOT_ROVER_WHEEL_SCALE_DEFAULT 100U
+
+static uint8_t g_left_wheel_scale = ROBOT_ROVER_WHEEL_SCALE_DEFAULT;
+static uint8_t g_right_wheel_scale = ROBOT_ROVER_WHEEL_SCALE_DEFAULT;
 
 static int8_t clamp_percent(int8_t value)
 {
@@ -20,13 +23,15 @@ static int8_t clamp_percent(int8_t value)
     return value;
 }
 
-static int8_t calibrate_left_wheel(int8_t percent)
+static int8_t calibrate_wheel(int8_t percent, uint8_t scale)
 {
     int16_t value = percent;
     int16_t magnitude = (value < 0) ? (int16_t)(-value) : value;
 
-    magnitude = (int16_t)(((magnitude * ROBOT_ROVER_LEFT_WHEEL_SCALE_NUM) +
-        (ROBOT_ROVER_LEFT_WHEEL_SCALE_DEN / 2)) / ROBOT_ROVER_LEFT_WHEEL_SCALE_DEN);
+    magnitude = (int16_t)(((magnitude * scale) + 50) / 100);
+    if (magnitude > 100) {
+        magnitude = 100;
+    }
     return (int8_t)((value < 0) ? -magnitude : magnitude);
 }
 
@@ -46,27 +51,28 @@ static bool write_json_speed(int16_t left_centi, int16_t right_centi)
 {
     char buffer[48];
     int len;
-    int32_t written;
     uint16_t left_abs = (uint16_t)((left_centi < 0) ? -left_centi : left_centi);
     uint16_t right_abs = (uint16_t)((right_centi < 0) ? -right_centi : right_centi);
     const char *left_sign = (left_centi < 0) ? "-" : "";
     const char *right_sign = (right_centi < 0) ? "-" : "";
 
     len = snprintf(buffer, sizeof(buffer),
-        "{\"T\":1,\"L\":%s0.%02u,\"R\":%s0.%02u}\n",
+        "{\"T\":1,\"L\":%s0.%02u,\"R\":%s0.%02u}",
         left_sign, left_abs, right_sign, right_abs);
     if ((len <= 0) || ((uint32_t)len >= sizeof(buffer))) {
         return false;
     }
 
-    written = uapi_uart_write(ROBOT_ROVER_UART_BUS, (uint8_t *)buffer, (uint32_t)len, 0U);
-    return written == len;
+    /* The board routes the stable Type-C output through osal_printk. Emit a
+     * standalone JSON line so the Pi bridge can use its normal line parser. */
+    osal_printk("\r\n%s\r\n", buffer);
+    return true;
 }
 
 bool robot_rover_link_apply(int8_t left_percent, int8_t right_percent)
 {
-    int16_t left_centi = percent_to_centi_speed(calibrate_left_wheel(left_percent));
-    int16_t right_centi = percent_to_centi_speed(right_percent);
+    int16_t left_centi = percent_to_centi_speed(calibrate_wheel(left_percent, g_left_wheel_scale));
+    int16_t right_centi = percent_to_centi_speed(calibrate_wheel(right_percent, g_right_wheel_scale));
 
     return write_json_speed(left_centi, right_centi);
 }
@@ -79,4 +85,25 @@ bool robot_rover_link_stop(void)
 bool robot_rover_link_init(void)
 {
     return robot_rover_link_stop();
+}
+
+bool robot_rover_link_set_wheel_scale(uint8_t left_percent, uint8_t right_percent)
+{
+    if ((left_percent < ROBOT_ROVER_WHEEL_SCALE_MIN) || (left_percent > ROBOT_ROVER_WHEEL_SCALE_MAX) ||
+        (right_percent < ROBOT_ROVER_WHEEL_SCALE_MIN) || (right_percent > ROBOT_ROVER_WHEEL_SCALE_MAX)) {
+        return false;
+    }
+    g_left_wheel_scale = left_percent;
+    g_right_wheel_scale = right_percent;
+    return true;
+}
+
+void robot_rover_link_get_wheel_scale(uint8_t *left_percent, uint8_t *right_percent)
+{
+    if (left_percent != NULL) {
+        *left_percent = g_left_wheel_scale;
+    }
+    if (right_percent != NULL) {
+        *right_percent = g_right_wheel_scale;
+    }
 }

@@ -24,7 +24,9 @@
 #define ROBOT_SLE_SERVICE_UUID 0x7100U
 #define ROBOT_SLE_COMMAND_UUID 0x7101U
 #define ROBOT_SLE_RESPONSE_UUID 0x7102U
-#define ROBOT_SLE_SAFE_SPEED 100U
+#define ROBOT_SLE_MANUAL_SPEED_DEFAULT 70U
+#define ROBOT_SLE_MANUAL_SPEED_MIN 30U
+#define ROBOT_SLE_MANUAL_SPEED_MAX 100U
 #define ROBOT_SLE_RESPONSE_MAX_LEN 192U
 #define ROBOT_SLE_ROUTE_COMMAND_MAX_LEN 96U
 #define ROBOT_SLE_MTU_SIZE 256U
@@ -56,6 +58,10 @@ static uint16_t g_robot_sle_service_handle;
 static uint16_t g_robot_sle_command_handle;
 static uint16_t g_robot_sle_response_handle;
 static char g_robot_sle_last_response[ROBOT_SLE_RESPONSE_MAX_LEN] = "+ROBOT:SLE,BOOT\r\n";
+static robot_mvp_route_config_t g_robot_sle_route_staging;
+static uint16_t g_robot_sle_route_received_mask;
+static bool g_robot_sle_route_upload_active;
+static uint8_t g_robot_sle_manual_speed = ROBOT_SLE_MANUAL_SPEED_DEFAULT;
 
 static void robot_sle_uuid_set(sle_uuid_t *out, uint16_t short_uuid)
 {
@@ -173,6 +179,7 @@ static bool robot_sle_is_supported_key(uint8_t key)
         case 'O':
         case 'P':
         case 'T':
+        case 'W':
         case 'X':
             return true;
         default:
@@ -304,15 +311,113 @@ static bool robot_sle_skip_separator(char **cursor)
 
 static void robot_sle_format_route_config_response(char *response, size_t response_size, const char *status)
 {
-    robot_mvp_patrol_config_t config = {0};
+    robot_mvp_route_config_t config = {0};
 
-    robot_mvp_control_get_patrol_config(&config);
-    (void)snprintf(response, response_size, "+ROBOT:ROUTE,%s,%u,%u,%u,%u\r\n",
+    robot_mvp_control_get_route_config(&config);
+    (void)snprintf(response, response_size, "+ROBOT:ROUTE,%s,%u,%u,%u\r\n",
         status,
-        config.forward_ms,
-        config.turn_ms,
+        config.segment_count,
         config.speed,
         config.max_loops);
+}
+
+static void robot_sle_format_wheel_calibration_response(char *response, size_t response_size, const char *status)
+{
+    robot_mvp_wheel_calibration_t calibration = {0};
+
+    robot_mvp_control_get_wheel_calibration(&calibration);
+    (void)snprintf(response, response_size, "+ROBOT:WHEEL,%s,%u,%u\r\n",
+        status, calibration.left_percent, calibration.right_percent);
+}
+
+static void robot_sle_format_manual_speed_response(char *response, size_t response_size, const char *status)
+{
+    (void)snprintf(response, response_size, "+ROBOT:SPEED,%s,%u\r\n", status, g_robot_sle_manual_speed);
+}
+
+static bool robot_sle_route_text_end(const char *cursor)
+{
+    return (cursor != NULL) && ((*cursor == '\0') || (*cursor == '\r') || (*cursor == '\n'));
+}
+
+static void robot_sle_begin_route_upload(char *cursor, char *response, size_t response_size)
+{
+    uint32_t segment_count = 0U;
+    uint32_t speed = 0U;
+    uint32_t loops = 0U;
+
+    if (!robot_sle_parse_uint_field(&cursor, &segment_count) ||
+        !robot_sle_skip_separator(&cursor) ||
+        !robot_sle_parse_uint_field(&cursor, &speed) ||
+        !robot_sle_skip_separator(&cursor) ||
+        !robot_sle_parse_uint_field(&cursor, &loops) ||
+        !robot_sle_route_text_end(cursor) ||
+        (segment_count == 0U) || (segment_count > ROBOT_MVP_ROUTE_MAX_SEGMENTS) ||
+        (speed > 255U)) {
+        (void)snprintf(response, response_size, "+ROBOT:ROUTE,ERR,BEGIN\r\n");
+        return;
+    }
+
+    (void)memset_s(&g_robot_sle_route_staging, sizeof(g_robot_sle_route_staging), 0,
+        sizeof(g_robot_sle_route_staging));
+    g_robot_sle_route_staging.segment_count = (uint8_t)segment_count;
+    g_robot_sle_route_staging.speed = (uint8_t)speed;
+    g_robot_sle_route_staging.max_loops = loops;
+    g_robot_sle_route_received_mask = 0U;
+    g_robot_sle_route_upload_active = true;
+    (void)snprintf(response, response_size, "+ROBOT:ROUTE,BEGIN,%u,%u,%u\r\n",
+        (uint8_t)segment_count, (uint8_t)speed, loops);
+}
+
+static void robot_sle_set_route_segment(char *cursor, char *response, size_t response_size)
+{
+    uint32_t index = 0U;
+    uint32_t forward_ms = 0U;
+    uint32_t turn_direction = 0U;
+    uint32_t turn_ms = 0U;
+
+    if (!g_robot_sle_route_upload_active ||
+        !robot_sle_parse_uint_field(&cursor, &index) ||
+        !robot_sle_skip_separator(&cursor) ||
+        !robot_sle_parse_uint_field(&cursor, &forward_ms) ||
+        !robot_sle_skip_separator(&cursor) ||
+        !robot_sle_parse_uint_field(&cursor, &turn_direction) ||
+        !robot_sle_skip_separator(&cursor) ||
+        !robot_sle_parse_uint_field(&cursor, &turn_ms) ||
+        !robot_sle_route_text_end(cursor) ||
+        (index >= g_robot_sle_route_staging.segment_count) ||
+        (turn_direction > ROBOT_MVP_ROUTE_TURN_RIGHT)) {
+        (void)snprintf(response, response_size, "+ROBOT:ROUTE,ERR,SEG\r\n");
+        return;
+    }
+
+    g_robot_sle_route_staging.segments[index].forward_ms = forward_ms;
+    g_robot_sle_route_staging.segments[index].turn_direction = (uint8_t)turn_direction;
+    g_robot_sle_route_staging.segments[index].turn_ms = turn_ms;
+    g_robot_sle_route_received_mask |= (uint16_t)(1U << index);
+    (void)snprintf(response, response_size, "+ROBOT:ROUTE,SEG,%u\r\n", (uint8_t)index);
+}
+
+static void robot_sle_commit_route_upload(char *response, size_t response_size)
+{
+    uint16_t expected_mask;
+
+    if (!g_robot_sle_route_upload_active) {
+        (void)snprintf(response, response_size, "+ROBOT:ROUTE,ERR,NOUPLOAD\r\n");
+        return;
+    }
+    expected_mask = (uint16_t)((1U << g_robot_sle_route_staging.segment_count) - 1U);
+    if (g_robot_sle_route_received_mask != expected_mask) {
+        (void)snprintf(response, response_size, "+ROBOT:ROUTE,ERR,MISSING\r\n");
+        return;
+    }
+    if (!robot_mvp_control_config_route(&g_robot_sle_route_staging)) {
+        (void)snprintf(response, response_size, "+ROBOT:ROUTE,ERR,RANGE\r\n");
+        return;
+    }
+
+    g_robot_sle_route_upload_active = false;
+    robot_sle_format_route_config_response(response, response_size, "OK");
 }
 
 static void robot_sle_execute_route_text(const uint8_t *value, uint16_t length, char *response, size_t response_size)
@@ -345,6 +450,18 @@ static void robot_sle_execute_route_text(const uint8_t *value, uint16_t length, 
 
     if ((strcmp(text, "R?") == 0) || (strcmp(text, "R") == 0)) {
         robot_sle_format_route_config_response(response, response_size, "CFG");
+        return;
+    }
+    if ((text[0] == 'R') && (text[1] == '0') && (text[2] == ',')) {
+        robot_sle_begin_route_upload(&text[3], response, response_size);
+        return;
+    }
+    if ((text[0] == 'R') && (text[1] == '1') && (text[2] == ',')) {
+        robot_sle_set_route_segment(&text[3], response, response_size);
+        return;
+    }
+    if ((strcmp(text, "R2") == 0) || (strcmp(text, "R2\r") == 0) || (strcmp(text, "R2\n") == 0)) {
+        robot_sle_commit_route_upload(response, response_size);
         return;
     }
     if ((text[0] != 'R') || (text[1] != ',')) {
@@ -381,6 +498,94 @@ static void robot_sle_execute_route_text(const uint8_t *value, uint16_t length, 
     robot_sle_format_route_config_response(response, response_size, "OK");
 }
 
+static void robot_sle_execute_wheel_text(const uint8_t *value, uint16_t length, char *response, size_t response_size)
+{
+    char text[ROBOT_SLE_ROUTE_COMMAND_MAX_LEN];
+    char *cursor = NULL;
+    uint32_t left_percent = 0U;
+    uint32_t right_percent = 0U;
+    robot_mvp_wheel_calibration_t calibration = {0};
+
+    if ((value == NULL) || (response == NULL) || (response_size == 0U) || (length >= sizeof(text))) {
+        return;
+    }
+    (void)memset_s(text, sizeof(text), 0, sizeof(text));
+    if (memcpy_s(text, sizeof(text) - 1U, value, length) != EOK) {
+        (void)snprintf(response, response_size, "+ROBOT:WHEEL,ERR,COPY\r\n");
+        return;
+    }
+    text[length] = '\0';
+    if (text[0] == 'w') {
+        text[0] = 'W';
+    }
+    if ((strcmp(text, "W?") == 0) || (strcmp(text, "W") == 0)) {
+        robot_sle_format_wheel_calibration_response(response, response_size, "CFG");
+        return;
+    }
+    if ((text[0] != 'W') || (text[1] != ',')) {
+        (void)snprintf(response, response_size, "+ROBOT:WHEEL,ERR,FORMAT\r\n");
+        return;
+    }
+
+    cursor = &text[2];
+    if (!robot_sle_parse_uint_field(&cursor, &left_percent) ||
+        !robot_sle_skip_separator(&cursor) ||
+        !robot_sle_parse_uint_field(&cursor, &right_percent) ||
+        !robot_sle_route_text_end(cursor) || (left_percent > 255U) || (right_percent > 255U)) {
+        (void)snprintf(response, response_size, "+ROBOT:WHEEL,ERR,FORMAT\r\n");
+        return;
+    }
+    calibration.left_percent = (uint8_t)left_percent;
+    calibration.right_percent = (uint8_t)right_percent;
+    if (!robot_mvp_control_set_wheel_calibration(&calibration)) {
+        (void)snprintf(response, response_size, "+ROBOT:WHEEL,ERR,RANGE\r\n");
+        return;
+    }
+    robot_sle_format_wheel_calibration_response(response, response_size, "OK");
+}
+
+static void robot_sle_execute_manual_speed_text(const uint8_t *value, uint16_t length,
+    char *response, size_t response_size)
+{
+    char text[ROBOT_SLE_ROUTE_COMMAND_MAX_LEN];
+    char *cursor = NULL;
+    uint32_t speed = 0U;
+
+    if ((value == NULL) || (response == NULL) || (response_size == 0U) || (length >= sizeof(text))) {
+        return;
+    }
+    (void)memset_s(text, sizeof(text), 0, sizeof(text));
+    if (memcpy_s(text, sizeof(text) - 1U, value, length) != EOK) {
+        (void)snprintf(response, response_size, "+ROBOT:SPEED,ERR,COPY\r\n");
+        return;
+    }
+    text[length] = '\0';
+    if (text[0] == 'v') {
+        text[0] = 'V';
+    }
+    if ((strcmp(text, "V?") == 0) || (strcmp(text, "V") == 0)) {
+        robot_sle_format_manual_speed_response(response, response_size, "CFG");
+        return;
+    }
+    if ((text[0] != 'V') || (text[1] != ',')) {
+        (void)snprintf(response, response_size, "+ROBOT:SPEED,ERR,FORMAT\r\n");
+        return;
+    }
+
+    cursor = &text[2];
+    if (!robot_sle_parse_uint_field(&cursor, &speed) || !robot_sle_route_text_end(cursor)) {
+        (void)snprintf(response, response_size, "+ROBOT:SPEED,ERR,FORMAT\r\n");
+        return;
+    }
+    if ((speed < ROBOT_SLE_MANUAL_SPEED_MIN) || (speed > ROBOT_SLE_MANUAL_SPEED_MAX)) {
+        (void)snprintf(response, response_size, "+ROBOT:SPEED,ERR,RANGE\r\n");
+        return;
+    }
+
+    g_robot_sle_manual_speed = (uint8_t)speed;
+    robot_sle_format_manual_speed_response(response, response_size, "OK");
+}
+
 static void robot_sle_execute_key(uint8_t key, char *response, size_t response_size);
 
 static void robot_sle_execute_text(const uint8_t *value, uint16_t length, char *response, size_t response_size)
@@ -395,6 +600,14 @@ static void robot_sle_execute_text(const uint8_t *value, uint16_t length, char *
     key = value[0];
     if (((key == 'R') || (key == 'r')) && (length > 1U)) {
         robot_sle_execute_route_text(value, length, response, response_size);
+        return;
+    }
+    if (((key == 'W') || (key == 'w')) && (length > 1U)) {
+        robot_sle_execute_wheel_text(value, length, response, response_size);
+        return;
+    }
+    if ((key == 'V') || (key == 'v')) {
+        robot_sle_execute_manual_speed_text(value, length, response, response_size);
         return;
     }
 
@@ -418,7 +631,7 @@ static void robot_sle_execute_key(uint8_t key, char *response, size_t response_s
     if (robot_sle_command_from_key(key, &motion_command)) {
         robot_status_t status = robot_mvp_control_motion(
             motion_command,
-            ROBOT_SLE_SAFE_SPEED,
+            g_robot_sle_manual_speed,
             &sequence,
             &moving
         );
@@ -502,6 +715,9 @@ static void robot_sle_execute_key(uint8_t key, char *response, size_t response_s
                 state.command_age_ms);
             return;
         }
+        case 'W':
+            robot_sle_format_wheel_calibration_response(response, response_size, "CFG");
+            return;
         default:
             (void)snprintf(response, response_size, "+ROBOT:ERR,INVALID,%u\r\n", key);
             return;

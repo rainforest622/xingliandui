@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 from glob import glob
+from pathlib import Path
 from typing import Any, Iterator
 
 import cv2
@@ -65,6 +66,11 @@ class CameraCapture:
         return frame, fps
 
     @property
+    def frame_is_fresh(self) -> bool:
+        age = self.last_frame_age_sec
+        return age is not None and age <= max(1.0, 3.0 / max(1.0, self.target_fps))
+
+    @property
     def frames_total(self) -> int:
         with self._lock:
             return self._frames_total
@@ -100,7 +106,7 @@ class CameraCapture:
             "fps_actual": fps,
             "fps_target": self.target_fps,
             "frames_total": self.frames_total,
-            "frame_ready": frame is not None,
+            "frame_ready": frame is not None and self.frame_is_fresh,
             "last_frame_age_sec": self.last_frame_age_sec,
         }
 
@@ -229,9 +235,21 @@ class CameraCapture:
 
     def _v4l2_frames(self) -> Iterator[np.ndarray]:
         period = 1.0 / max(1, self.target_fps)
-        candidates: list[int | str] = [self.camera_id]
+        requested = f"/dev/video{self.camera_id}" if isinstance(self.camera_id, int) else str(self.camera_id)
+        candidates: list[str] = [requested]
         for device in sorted(glob("/dev/video*")):
             if device not in candidates:
+                try:
+                    node_name = (Path("/sys/class/video4linux") / Path(device).name / "name").read_text(
+                        encoding="utf-8"
+                    ).lower()
+                except OSError:
+                    node_name = ""
+                # Raspberry Pi PISP and HEVC nodes are not cameras.  Opening
+                # them after a USB timeout produces one stale frame followed
+                # by endless select() timeouts, which is unsafe for vision.
+                if "pisp" in node_name or "hevc" in node_name:
+                    continue
                 candidates.append(device)
 
         errors: list[str] = []
@@ -243,7 +261,9 @@ class CameraCapture:
                 cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-                cap.set(cv2.CAP_PROP_FPS, self.target_fps)
+                # Keep the camera's native supported FPS (the attached UVC
+                # camera advertises 25/30 FPS, not 15).  The loop below still
+                # throttles outgoing frames to target_fps.
                 if not cap.isOpened():
                     errors.append(f"{candidate}: open failed")
                     continue

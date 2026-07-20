@@ -22,6 +22,7 @@
 #define ROBOT_TASK_PRIORITY 23U
 #define ROBOT_LOOP_DELAY_MS 2U
 #define ROBOT_CONTROL_TIMEOUT_MS 500U
+#define ROBOT_ROVER_KEEPALIVE_MS 100U
 #define ROBOT_AT_SAFE_SPEED 100
 #define ROBOT_AVOID_SPEED 100
 #define ROBOT_AVOID_SAMPLE_MS 90U
@@ -32,14 +33,14 @@
 #define ROBOT_AVOID_TEST_BLOCK_DISTANCE_MM 120U
 #define ROBOT_AVOID_TEST_CLEAR_DISTANCE_MM 450U
 #define ROBOT_PATROL_SPEED 100
-#define ROBOT_PATROL_ROUTE_LEGS 4U
+#define ROBOT_PATROL_ROUTE_LEGS_DEFAULT 4U
 #define ROBOT_PATROL_SAMPLE_MS 90U
 #define ROBOT_PATROL_FORWARD_MS 9000U
 #define ROBOT_PATROL_TURN_MS 430U
 #define ROBOT_PATROL_FORWARD_MIN_MS 500U
 #define ROBOT_PATROL_FORWARD_MAX_MS 60000U
 #define ROBOT_PATROL_TURN_MIN_MS 100U
-#define ROBOT_PATROL_TURN_MAX_MS 3000U
+#define ROBOT_PATROL_TURN_MAX_MS 8000U
 #define ROBOT_PATROL_SPEED_MIN 30U
 #define ROBOT_PATROL_SPEED_MAX 100U
 #define ROBOT_PATROL_MAX_LOOPS_DEFAULT 1U
@@ -57,7 +58,8 @@
 #define ROBOT_PATROL_ENV_DWELL_MS 1200U
 #define ROBOT_PATROL_ENV_REARM_MS 10000U
 #define ROBOT_MONITOR_ENV_INTERVAL_MS 2000U
-#define ROBOT_MONITOR_OBSTACLE_INTERVAL_MS 500U
+#define ROBOT_MONITOR_OBSTACLE_INTERVAL_MS 100U
+#define ROBOT_MONITOR_REPORT_INTERVAL_MS 100U
 #define ROBOT_MONITOR_TEMP_HIGH_DECI_C 350
 #define ROBOT_MONITOR_HUMIDITY_HIGH_DECI_PERCENT 850U
 #define ROBOT_MONITOR_AGE_UNKNOWN 0xFFFFFFFFU
@@ -89,7 +91,8 @@ typedef enum {
     ROBOT_PATROL_DETOUR_RETURN_FORWARD = 9,
     ROBOT_PATROL_DETOUR_TURN_RIGHT_TO_TRACK = 10,
     ROBOT_PATROL_ENV_ALERT = 11,
-    ROBOT_PATROL_SENSOR_ERROR = 12
+    ROBOT_PATROL_SENSOR_ERROR = 12,
+    ROBOT_PATROL_TURN_LEFT = 13
 } robot_patrol_phase_t;
 
 static bool g_motor_ready;
@@ -99,7 +102,10 @@ static bool g_avoid_active;
 static bool g_avoid_test_active;
 static bool g_patrol_active;
 static bool g_robot_task_started;
+static int8_t g_motion_left;
+static int8_t g_motion_right;
 static uint64_t g_last_command_ms;
+static uint64_t g_next_motion_keepalive_ms;
 static uint64_t g_avoid_phase_until_ms;
 static uint64_t g_next_obstacle_sample_ms;
 static uint64_t g_avoid_test_until_ms;
@@ -112,12 +118,22 @@ static uint64_t g_next_env_monitor_ms;
 static uint64_t g_next_obstacle_monitor_ms;
 static uint64_t g_env_sample_ms;
 static uint64_t g_obstacle_sample_ms;
+static uint64_t g_last_monitor_report_ms;
 static uint32_t g_monitor_sample_count;
+static uint32_t g_last_monitor_report_flags;
+static bool g_monitor_reported_once;
 static uint32_t g_patrol_loop_count;
 static uint32_t g_patrol_resume_forward_ms;
 static uint32_t g_patrol_forward_ms = ROBOT_PATROL_FORWARD_MS;
 static uint32_t g_patrol_turn_ms = ROBOT_PATROL_TURN_MS;
 static uint32_t g_patrol_max_loops = ROBOT_PATROL_MAX_LOOPS_DEFAULT;
+static robot_mvp_route_segment_t g_patrol_route[ROBOT_MVP_ROUTE_MAX_SEGMENTS] = {
+    {ROBOT_PATROL_FORWARD_MS, ROBOT_PATROL_TURN_MS, ROBOT_MVP_ROUTE_TURN_RIGHT},
+    {ROBOT_PATROL_FORWARD_MS, ROBOT_PATROL_TURN_MS, ROBOT_MVP_ROUTE_TURN_RIGHT},
+    {ROBOT_PATROL_FORWARD_MS, ROBOT_PATROL_TURN_MS, ROBOT_MVP_ROUTE_TURN_RIGHT},
+    {ROBOT_PATROL_FORWARD_MS, ROBOT_PATROL_TURN_MS, ROBOT_MVP_ROUTE_TURN_RIGHT}
+};
+static uint8_t g_patrol_route_count = ROBOT_PATROL_ROUTE_LEGS_DEFAULT;
 static uint8_t g_at_sequence;
 static uint8_t g_last_command;
 static uint8_t g_last_sequence;
@@ -195,6 +211,41 @@ static bool sample_obstacle_into(robot_obstacle_data_t *output, uint64_t now_ms)
     return ok;
 }
 
+static void report_monitor_telemetry(uint64_t now_ms)
+{
+    uint32_t alarm_flags = monitor_alarm_flags();
+
+    if (g_monitor_reported_once && (alarm_flags == g_last_monitor_report_flags) &&
+        ((now_ms - g_last_monitor_report_ms) < ROBOT_MONITOR_REPORT_INTERVAL_MS)) {
+        return;
+    }
+
+    /* A compact, documented monitor frame lets the Pi voice gateway announce
+     * changes even when the HarmonyOS page is not polling the SLE service. */
+    osal_printk(
+        "\r\n+ROBOT:MON,%u,%u,%u,%u,%d,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\r\n",
+        (uint32_t)now_ms,
+        g_motor_ready ? 1U : 0U,
+        g_moving ? 1U : 0U,
+        g_env.valid ? 1U : 0U,
+        g_env.temperature_deci_c,
+        g_env.humidity_deci_percent,
+        g_obstacle.enabled ? 1U : 0U,
+        g_obstacle.valid ? 1U : 0U,
+        g_obstacle.blocked ? 1U : 0U,
+        g_obstacle.distance_mm,
+        g_obstacle.threshold_mm,
+        g_obstacle.reason,
+        alarm_flags,
+        g_monitor_sample_count,
+        monitor_age_ms(now_ms, g_env_sample_ms),
+        monitor_age_ms(now_ms, g_obstacle_sample_ms)
+    );
+    g_last_monitor_report_ms = now_ms;
+    g_last_monitor_report_flags = alarm_flags;
+    g_monitor_reported_once = true;
+}
+
 static void update_monitoring(uint64_t now_ms)
 {
     bool refresh_needed = false;
@@ -214,6 +265,7 @@ static void update_monitoring(uint64_t now_ms)
     if (refresh_needed) {
         refresh_oled(now_ms);
     }
+    report_monitor_telemetry(now_ms);
 }
 
 #if ROBOT_ENABLE_RAW_UART
@@ -258,6 +310,9 @@ static void stop_motion(void)
         (void)motor_backend_stop();
     }
     g_moving = false;
+    g_motion_left = 0;
+    g_motion_right = 0;
+    g_next_motion_keepalive_ms = 0U;
 }
 
 static bool drive_motion(int8_t left, int8_t right)
@@ -267,12 +322,51 @@ static bool drive_motion(int8_t left, int8_t right)
         return false;
     }
 
+    /* Do not interrupt a continuous leg by re-sending an identical speed command. */
+    if (g_moving && (g_motion_left == left) && (g_motion_right == right)) {
+        return true;
+    }
+
     if (!motor_backend_apply(left, right)) {
         g_moving = false;
         return false;
     }
     g_moving = (left != 0) || (right != 0);
+    g_motion_left = left;
+    g_motion_right = right;
+    g_next_motion_keepalive_ms = uapi_tcxo_get_ms() + ROBOT_ROVER_KEEPALIVE_MS;
     return true;
+}
+
+static void update_motion_keepalive(uint64_t now_ms)
+{
+#ifdef CONFIG_ROBOT_MVP_ENABLE_WAVE_ROVER_LINK
+    if (!g_motor_ready || !g_moving || (now_ms < g_next_motion_keepalive_ms)) {
+        return;
+    }
+
+    /* The Pi bridge stops a moving rover when it has no fresh JSON for 0.3s. */
+    if (!motor_backend_apply(g_motion_left, g_motion_right)) {
+        g_moving = false;
+        g_motion_left = 0;
+        g_motion_right = 0;
+        g_next_motion_keepalive_ms = 0U;
+        if (g_patrol_active) {
+            g_patrol_active = false;
+            g_patrol_phase = ROBOT_PATROL_IDLE;
+            g_patrol_status = ROBOT_STATUS_MOTOR_ERROR;
+        }
+        if (g_avoid_active) {
+            g_avoid_active = false;
+            g_avoid_phase = ROBOT_AVOID_IDLE;
+        }
+        (void)motor_backend_stop();
+        return;
+    }
+    g_next_motion_keepalive_ms = now_ms + ROBOT_ROVER_KEEPALIVE_MS;
+#else
+    unused(now_ms);
+#endif
 }
 
 static void reset_patrol_state(robot_patrol_phase_t phase)
@@ -442,6 +536,16 @@ static void update_avoidance(uint64_t now_ms)
     }
 }
 
+static uint32_t patrol_current_forward_ms(void)
+{
+    if ((g_patrol_route_count == 0U) || (g_patrol_leg_index >= g_patrol_route_count)) {
+        return g_patrol_forward_ms;
+    }
+    return g_patrol_route[g_patrol_leg_index].forward_ms;
+}
+
+static void patrol_finish_route_turn(uint64_t now_ms);
+
 static bool patrol_forward(uint64_t now_ms)
 {
     if (!drive_motion((int8_t)g_patrol_speed, (int8_t)g_patrol_speed)) {
@@ -450,22 +554,47 @@ static bool patrol_forward(uint64_t now_ms)
         return false;
     }
     if ((g_patrol_forward_until_ms == 0U) || (now_ms >= g_patrol_forward_until_ms)) {
-        g_patrol_forward_until_ms = now_ms + g_patrol_forward_ms;
+        g_patrol_forward_until_ms = now_ms + patrol_current_forward_ms();
     }
     g_patrol_phase = ROBOT_PATROL_FORWARD;
     g_patrol_next_obstacle_sample_ms = now_ms + ROBOT_PATROL_SAMPLE_MS;
     return true;
 }
 
-static bool patrol_turn_right(uint64_t now_ms)
+static bool patrol_begin_route_turn(uint64_t now_ms)
 {
-    if (!drive_motion((int8_t)g_patrol_speed, -(int8_t)g_patrol_speed)) {
+    robot_mvp_route_segment_t *segment = NULL;
+    int8_t left;
+    int8_t right;
+
+    if ((g_patrol_route_count == 0U) || (g_patrol_leg_index >= g_patrol_route_count)) {
+        g_patrol_status = ROBOT_STATUS_INVALID_COMMAND;
+        disable_patrol(ROBOT_PATROL_IDLE);
+        return false;
+    }
+
+    segment = &g_patrol_route[g_patrol_leg_index];
+    if ((segment->turn_direction == ROBOT_MVP_ROUTE_TURN_NONE) || (segment->turn_ms == 0U)) {
+        patrol_finish_route_turn(now_ms);
+        return true;
+    }
+
+    if (segment->turn_direction == ROBOT_MVP_ROUTE_TURN_LEFT) {
+        left = -(int8_t)g_patrol_speed;
+        right = (int8_t)g_patrol_speed;
+        g_patrol_phase = ROBOT_PATROL_TURN_LEFT;
+    } else {
+        left = (int8_t)g_patrol_speed;
+        right = -(int8_t)g_patrol_speed;
+        g_patrol_phase = ROBOT_PATROL_TURN_RIGHT;
+    }
+
+    if (!drive_motion(left, right)) {
         g_patrol_status = ROBOT_STATUS_MOTOR_ERROR;
         disable_patrol(ROBOT_PATROL_IDLE);
         return false;
     }
-    g_patrol_phase = ROBOT_PATROL_TURN_RIGHT;
-    g_patrol_phase_until_ms = now_ms + g_patrol_turn_ms;
+    g_patrol_phase_until_ms = now_ms + segment->turn_ms;
     return true;
 }
 
@@ -556,7 +685,12 @@ static void patrol_finish_route_turn(uint64_t now_ms)
 {
     g_patrol_block_count = 0U;
     g_patrol_invalid_count = 0U;
-    g_patrol_leg_index = (uint8_t)((g_patrol_leg_index + 1U) % ROBOT_PATROL_ROUTE_LEGS);
+    if (g_patrol_route_count == 0U) {
+        g_patrol_status = ROBOT_STATUS_INVALID_COMMAND;
+        disable_patrol(ROBOT_PATROL_IDLE);
+        return;
+    }
+    g_patrol_leg_index = (uint8_t)((g_patrol_leg_index + 1U) % g_patrol_route_count);
     if (g_patrol_leg_index == 0U) {
         ++g_patrol_loop_count;
         if ((g_patrol_max_loops != 0U) && (g_patrol_loop_count >= g_patrol_max_loops)) {
@@ -566,7 +700,7 @@ static void patrol_finish_route_turn(uint64_t now_ms)
             return;
         }
     }
-    g_patrol_forward_until_ms = now_ms + g_patrol_forward_ms;
+    g_patrol_forward_until_ms = now_ms + patrol_current_forward_ms();
     (void)patrol_forward(now_ms);
 }
 
@@ -624,7 +758,8 @@ static void update_patrol(uint64_t now_ms)
     alarm_flags = monitor_alarm_flags();
     env_alarm = (alarm_flags & (ROBOT_MONITOR_ALARM_TEMP_HIGH | ROBOT_MONITOR_ALARM_HUMIDITY_HIGH)) != 0U;
 
-    if (((g_patrol_phase == ROBOT_PATROL_FORWARD) || (g_patrol_phase == ROBOT_PATROL_TURN_RIGHT)) &&
+    if (((g_patrol_phase == ROBOT_PATROL_FORWARD) || (g_patrol_phase == ROBOT_PATROL_TURN_RIGHT) ||
+        (g_patrol_phase == ROBOT_PATROL_TURN_LEFT)) &&
         env_alarm && (now_ms >= g_patrol_next_env_alert_ms)) {
         patrol_begin_env_alert(now_ms, alarm_flags);
         return;
@@ -637,7 +772,7 @@ static void update_patrol(uint64_t now_ms)
         return;
     }
 
-    if (g_patrol_phase == ROBOT_PATROL_TURN_RIGHT) {
+    if ((g_patrol_phase == ROBOT_PATROL_TURN_RIGHT) || (g_patrol_phase == ROBOT_PATROL_TURN_LEFT)) {
         if (now_ms >= g_patrol_phase_until_ms) {
             patrol_finish_route_turn(now_ms);
         }
@@ -706,7 +841,7 @@ static void update_patrol(uint64_t now_ms)
     }
 
     if (now_ms >= g_patrol_forward_until_ms) {
-        (void)patrol_turn_right(now_ms);
+        (void)patrol_begin_route_turn(now_ms);
         return;
     }
 
@@ -1061,6 +1196,12 @@ bool robot_mvp_control_config_patrol(const robot_mvp_patrol_config_t *config)
     g_patrol_turn_ms = config->turn_ms;
     g_patrol_speed = config->speed;
     g_patrol_max_loops = config->max_loops;
+    g_patrol_route_count = ROBOT_PATROL_ROUTE_LEGS_DEFAULT;
+    for (uint8_t index = 0U; index < g_patrol_route_count; ++index) {
+        g_patrol_route[index].forward_ms = config->forward_ms;
+        g_patrol_route[index].turn_ms = config->turn_ms;
+        g_patrol_route[index].turn_direction = ROBOT_MVP_ROUTE_TURN_RIGHT;
+    }
     g_patrol_status = ROBOT_STATUS_OK;
     osal_printk("\r\nROBOT PATROL config forward=%u turn=%u speed=%u loops=%u\r\n",
         g_patrol_forward_ms, g_patrol_turn_ms, g_patrol_speed, g_patrol_max_loops);
@@ -1076,6 +1217,93 @@ void robot_mvp_control_get_patrol_config(robot_mvp_patrol_config_t *config)
     config->turn_ms = g_patrol_turn_ms;
     config->speed = g_patrol_speed;
     config->max_loops = g_patrol_max_loops;
+}
+
+bool robot_mvp_control_config_route(const robot_mvp_route_config_t *config)
+{
+    uint8_t index;
+
+    if ((config == NULL) || (config->segment_count == 0U) ||
+        (config->segment_count > ROBOT_MVP_ROUTE_MAX_SEGMENTS) ||
+        (config->speed < ROBOT_PATROL_SPEED_MIN) || (config->speed > ROBOT_PATROL_SPEED_MAX) ||
+        (config->max_loops > ROBOT_PATROL_MAX_LOOPS_LIMIT)) {
+        return false;
+    }
+
+    for (index = 0U; index < config->segment_count; ++index) {
+        const robot_mvp_route_segment_t *segment = &config->segments[index];
+        if ((segment->forward_ms < ROBOT_PATROL_FORWARD_MIN_MS) ||
+            (segment->forward_ms > ROBOT_PATROL_FORWARD_MAX_MS) ||
+            (segment->turn_direction > ROBOT_MVP_ROUTE_TURN_RIGHT)) {
+            return false;
+        }
+        if (segment->turn_direction == ROBOT_MVP_ROUTE_TURN_NONE) {
+            if (segment->turn_ms != 0U) {
+                return false;
+            }
+        } else if ((segment->turn_ms < ROBOT_PATROL_TURN_MIN_MS) ||
+            (segment->turn_ms > ROBOT_PATROL_TURN_MAX_MS)) {
+            return false;
+        }
+    }
+
+    disable_patrol(ROBOT_PATROL_IDLE);
+    g_patrol_route_count = config->segment_count;
+    g_patrol_speed = config->speed;
+    g_patrol_max_loops = config->max_loops;
+    for (index = 0U; index < g_patrol_route_count; ++index) {
+        g_patrol_route[index] = config->segments[index];
+    }
+    g_patrol_forward_ms = g_patrol_route[0].forward_ms;
+    g_patrol_turn_ms = g_patrol_route[0].turn_ms;
+    g_patrol_status = ROBOT_STATUS_OK;
+    osal_printk("\r\nROBOT ROUTE config segments=%u speed=%u loops=%u\r\n",
+        g_patrol_route_count, g_patrol_speed, g_patrol_max_loops);
+    return true;
+}
+
+void robot_mvp_control_get_route_config(robot_mvp_route_config_t *config)
+{
+    uint8_t index;
+
+    if (config == NULL) {
+        return;
+    }
+    (void)memset_s(config, sizeof(*config), 0, sizeof(*config));
+    config->segment_count = g_patrol_route_count;
+    config->speed = g_patrol_speed;
+    config->max_loops = g_patrol_max_loops;
+    for (index = 0U; index < g_patrol_route_count; ++index) {
+        config->segments[index] = g_patrol_route[index];
+    }
+}
+
+bool robot_mvp_control_set_wheel_calibration(const robot_mvp_wheel_calibration_t *calibration)
+{
+    if (calibration == NULL) {
+        return false;
+    }
+
+    disable_autonomy();
+    stop_motion();
+#ifdef CONFIG_ROBOT_MVP_ENABLE_WAVE_ROVER_LINK
+    return robot_rover_link_set_wheel_scale(calibration->left_percent, calibration->right_percent);
+#else
+    return false;
+#endif
+}
+
+void robot_mvp_control_get_wheel_calibration(robot_mvp_wheel_calibration_t *calibration)
+{
+    if (calibration == NULL) {
+        return;
+    }
+
+    calibration->left_percent = 100U;
+    calibration->right_percent = 100U;
+#ifdef CONFIG_ROBOT_MVP_ENABLE_WAVE_ROVER_LINK
+    robot_rover_link_get_wheel_scale(&calibration->left_percent, &calibration->right_percent);
+#endif
 }
 
 robot_status_t robot_mvp_control_start_patrol(robot_mvp_patrol_result_t *result)
@@ -1113,14 +1341,14 @@ robot_status_t robot_mvp_control_start_patrol(robot_mvp_patrol_result_t *result)
             g_patrol_block_count = 0U;
             g_patrol_invalid_count = 0U;
             g_patrol_resume_forward_ms = 0U;
-            g_patrol_forward_until_ms = now_ms + g_patrol_forward_ms;
+            g_patrol_forward_until_ms = now_ms + patrol_current_forward_ms();
             g_patrol_next_env_alert_ms = now_ms;
             g_received_command = true;
             g_last_command_ms = now_ms;
             g_last_command = ROBOT_CMD_FORWARD;
             g_last_sequence = ++g_at_sequence;
             if (start_blocked) {
-                g_patrol_resume_forward_ms = g_patrol_forward_ms;
+                g_patrol_resume_forward_ms = patrol_current_forward_ms();
                 stop_motion();
                 if (!patrol_obstacle_backward(now_ms)) {
                     status = ROBOT_STATUS_MOTOR_ERROR;
@@ -1619,7 +1847,10 @@ static void *robot_task(const char *argument)
     g_next_obstacle_monitor_ms = 0U;
     g_env_sample_ms = 0U;
     g_obstacle_sample_ms = 0U;
+    g_last_monitor_report_ms = 0U;
     g_monitor_sample_count = 0U;
+    g_last_monitor_report_flags = ROBOT_MONITOR_ALARM_NONE;
+    g_monitor_reported_once = false;
     g_env.valid = false;
     g_env.temperature_deci_c = 0;
     g_env.humidity_deci_percent = 0U;
@@ -1645,6 +1876,7 @@ static void *robot_task(const char *argument)
 #endif
         update_avoidance(uapi_tcxo_get_ms());
         update_patrol(uapi_tcxo_get_ms());
+        update_motion_keepalive(uapi_tcxo_get_ms());
         update_monitoring(uapi_tcxo_get_ms());
         check_watchdog();
         robot_buzzer_update(monitor_alarm_flags(), uapi_tcxo_get_ms());

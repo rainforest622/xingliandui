@@ -8,7 +8,7 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 if ($Package -eq '') {
-    $Package = Join-Path $repoRoot 'firmware\fwpkg\ws63-liteos-app_wave_rover_bridge_load_only.fwpkg'
+    $Package = Join-Path $repoRoot 'firmware\fwpkg\ws63-liteos-app_ws63_sle_pi_bridge_load_only.fwpkg'
 }
 
 $burnTool = Join-Path $HiSparkStudioRoot 'tools\BurnToolCmd\BurnToolCmd.exe'
