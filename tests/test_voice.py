@@ -25,6 +25,7 @@ from rover_arbiter import (
     adapt_rover_motion,
     apply_voice_intent,
     make_http_handler,
+    process_ws63_line,
     parse_ws63_telemetry_line,
 )
 from voice.intents import (
@@ -189,6 +190,28 @@ class VoiceIntentTests(unittest.TestCase):
             self.assertIn("halt", reason)
             self.assertTrue(map_brain.snapshot()["paused"])
             self.assertTrue(state.snapshot()["avoidance"]["active"])
+
+    def test_ws63_patrol_request_starts_pi_map_brain(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            route_path = Path(temp_dir) / "route.json"
+            route_path.write_text(
+                json.dumps({"steps": [{"id": "m1", "action": "move", "duration_s": 2.0}]}),
+                encoding="utf-8",
+            )
+            state = ArbiterState(arbiter_args())
+            map_brain = MapBrain(str(route_path))
+
+            handled = process_ws63_line(
+                b'{"mode":"auto_map","route_action":"start"}\n',
+                None,
+                state,
+                map_brain,
+            )
+
+            self.assertTrue(handled)
+            self.assertEqual(state.snapshot()["mode"], MODE_AUTO_MAP)
+            self.assertTrue(map_brain.snapshot()["active"])
+            self.assertEqual(state.snapshot()["last_ws63_line"], '{"mode":"auto_map","route_action":"start"}')
 
     def test_completed_detour_resumes_same_route_step_with_remaining_time(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

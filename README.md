@@ -30,6 +30,8 @@ WAVE ROVER ESP32 驱动板
 
 最终决策：WS63 不直接焊接 WAVE ROVER，WS63 通过 Type-C USB 串口接树莓派；树莓派再通过 40PIN UART 控制 WAVE ROVER。当前使用树莓派安全仲裁桥作为默认运行时：星闪急停、环境异常、手动接管和超声波避障优先级高于自动路线巡航。
 
+自动巡检只保留一个执行器：手机端 `P` 指令由 WS63 转发为树莓派的路线启动事件，树莓派负责已导入路线、固定左绕避障和回归路线；WS63 不再并行启动旧的本地巡检/右转避障状态机。固定绕障依次执行左、右、右、左四个路线标定的 90 度枢轴转向。
+
 采用该方案的原因：
 
 - 不再焊接 WAVE ROVER 或 WS63 上的 R16/R17 小焊盘，降低比赛前硬件损坏风险。
@@ -195,7 +197,7 @@ robocopy D:\r\src D:\b\src /E /XD D:\r\src\output
 
 ```text
 firmware\fwpkg\ws63-liteos-app_ws63_sle_pi_bridge_load_only.fwpkg
-SHA256: 5BF9C4A495A2988D2E5B893F7D9125F5BACE16F09FF81A0444A3432390CD72D6
+SHA256: A6B78EFB29A5BDFC7BA10009DA6FD3DEA91FC2C9A552CB55DAABC68DFA9C07EC
 ```
 
 ## 固件烧录

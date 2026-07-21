@@ -9,6 +9,9 @@
 #include "common_def.h"
 #include "errcode.h"
 #include "robot_mvp_control.h"
+#ifdef CONFIG_ROBOT_MVP_ENABLE_WAVE_ROVER_LINK
+#include "robot_rover_link.h"
+#endif
 #include "securec.h"
 #include "sle_common.h"
 #include "sle_connection_manager.h"
@@ -690,7 +693,23 @@ static void robot_sle_execute_key(uint8_t key, char *response, size_t response_s
         }
         case 'P': {
             robot_mvp_patrol_result_t result = {0};
+#ifdef CONFIG_ROBOT_MVP_ENABLE_WAVE_ROVER_LINK
+            robot_obstacle_data_t obstacle = {0};
+            uint8_t sequence = 0U;
+            bool moving = false;
+
+            /* Keep a single autonomy owner: the Pi runs the imported route
+             * and fixed-left avoidance, while WS63 remains the SLE gateway. */
+            (void)robot_mvp_control_motion(ROBOT_CMD_STOP, 0U, &sequence, &moving);
+            (void)robot_rover_link_request_map_patrol();
+            (void)robot_mvp_control_read_obstacle(&obstacle);
+            result.active = true;
+            result.phase = 1U;
+            result.status = ROBOT_STATUS_OK;
+            result.obstacle = obstacle;
+#else
             (void)robot_mvp_control_start_patrol(&result);
+#endif
             (void)robot_sle_format_patrol_response(response, response_size, &result);
             return;
         }

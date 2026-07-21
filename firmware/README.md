@@ -28,5 +28,5 @@ D:\r\src\output\ws63\fwpkg\ws63-liteos-app\ws63-liteos-app_load_only.fwpkg
 
 ```text
 firmware\fwpkg\ws63-liteos-app_ws63_sle_pi_bridge_load_only.fwpkg
-SHA256: 5BF9C4A495A2988D2E5B893F7D9125F5BACE16F09FF81A0444A3432390CD72D6
+SHA256: A6B78EFB29A5BDFC7BA10009DA6FD3DEA91FC2C9A552CB55DAABC68DFA9C07EC
 ```

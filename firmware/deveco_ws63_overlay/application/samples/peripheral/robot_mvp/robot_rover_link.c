@@ -82,6 +82,14 @@ bool robot_rover_link_stop(void)
     return robot_rover_link_apply(0, 0);
 }
 
+bool robot_rover_link_request_map_patrol(void)
+{
+    /* The Pi owns route timing and obstacle avoidance; this is a control event,
+     * not a motor command. */
+    osal_printk("\r\n{\"mode\":\"auto_map\",\"route_action\":\"start\"}\r\n");
+    return true;
+}
+
 bool robot_rover_link_init(void)
 {
     return robot_rover_link_stop();

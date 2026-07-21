@@ -2191,7 +2191,12 @@ def parse_ws63_telemetry_line(line: str) -> dict[str, Any] | None:
     return None
 
 
-def process_ws63_line(line: bytes, rover: serial.Serial, state: ArbiterState) -> bool:
+def process_ws63_line(
+    line: bytes,
+    rover: serial.Serial | None,
+    state: ArbiterState,
+    map_brain: MapBrain | None = None,
+) -> bool:
     stripped = line.strip()
     if not stripped:
         return True
@@ -2209,8 +2214,29 @@ def process_ws63_line(line: bytes, rover: serial.Serial, state: ArbiterState) ->
         state.note_ignored()
         return True
 
+    route_action = str(payload.get("route_action", "")).strip().lower()
+    if route_action == "start" and payload.get("mode") == MODE_AUTO_MAP:
+        if map_brain is None:
+            state.note_ignored()
+            if rover is None:
+                return True
+            return write_rover(rover, dict(STOP_PAYLOAD), "ws63_route", "map brain unavailable", state)
+        map_snapshot = map_brain.configure_and_start({})
+        if not map_snapshot.get("active", False):
+            state.set_mode(MODE_MANUAL, "ws63 route unavailable")
+            if rover is None:
+                return True
+            return write_rover(rover, dict(STOP_PAYLOAD), "ws63_route", "map route unavailable", state)
+        state.start_patrol_episode()
+        state.set_mode(MODE_AUTO_MAP, "ws63 route start")
+        with state.lock:
+            state.last_ws63_line = line_text
+        return True
+
     if payload.get("estop") is True or payload.get("mode") == MODE_ESTOP:
         state.set_mode(MODE_ESTOP, "ws63 estop")
+        if rover is None:
+            return True
         return write_rover(rover, dict(STOP_PAYLOAD), "estop", "ws63 estop", state)
     if payload.get("mode") in (MODE_MANUAL, MODE_AUTO_SQUARE, MODE_AUTO_VISION, MODE_AUTO_MAP):
         state.set_mode(str(payload["mode"]), "ws63 mode")
@@ -2291,7 +2317,7 @@ def main() -> int:
                 print(f"[WS63] read failed: {exc}", file=sys.stderr)
                 return 2
 
-            if line and not process_ws63_line(line, rover, state):
+            if line and not process_ws63_line(line, rover, state, map_brain):
                 return 3
 
             payload, source, reason = state.next_background_payload(vision, map_brain, camera_safety)
