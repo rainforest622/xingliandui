@@ -24,7 +24,10 @@
 #define ROBOT_SLE_SERVICE_UUID 0x7100U
 #define ROBOT_SLE_COMMAND_UUID 0x7101U
 #define ROBOT_SLE_RESPONSE_UUID 0x7102U
-#define ROBOT_SLE_MANUAL_SPEED_DEFAULT 70U
+/* Keep the firmware default aligned with the HarmonyOS controller.  At 70%
+ * the rover only receives +/-0.35, which is often below the useful skid-turn
+ * torque on a high-grip floor. */
+#define ROBOT_SLE_MANUAL_SPEED_DEFAULT 100U
 #define ROBOT_SLE_MANUAL_SPEED_MIN 30U
 #define ROBOT_SLE_MANUAL_SPEED_MAX 100U
 #define ROBOT_SLE_RESPONSE_MAX_LEN 192U

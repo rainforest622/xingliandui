@@ -10,6 +10,7 @@ import unittest
 import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "raspberry_pi"))
@@ -21,6 +22,7 @@ from rover_arbiter import (
     MODE_AUTO_MAP,
     MODE_MANUAL,
     RangeSafetyGuard,
+    adapt_rover_motion,
     apply_voice_intent,
     make_http_handler,
     parse_ws63_telemetry_line,
@@ -79,6 +81,22 @@ def arbiter_args() -> argparse.Namespace:
 
 
 class VoiceIntentTests(unittest.TestCase):
+    def test_manual_pivot_turn_uses_opposite_full_pwm(self) -> None:
+        self.assertEqual(
+            adapt_rover_motion({"T": 1, "L": -0.5, "R": 0.5}),
+            {"T": 11, "L": -255, "R": 255},
+        )
+        self.assertEqual(
+            adapt_rover_motion({"T": 1, "L": 0.5, "R": -0.5}),
+            {"T": 11, "L": 255, "R": -255},
+        )
+
+    def test_reverse_avoidance_motion_uses_reverse_pwm(self) -> None:
+        self.assertEqual(
+            adapt_rover_motion({"T": 1, "L": -0.18, "R": -0.18}),
+            {"T": 11, "L": -92, "R": -92},
+        )
+
     def test_avoidance_supervisor_executes_symmetric_detour(self) -> None:
         supervisor = AvoidanceSupervisor(arbiter_args())
         clear = {"state": "clear", "blocking": False, "filtered_mm": 1200, "caution_mm": 650}
@@ -159,6 +177,43 @@ class VoiceIntentTests(unittest.TestCase):
             self.assertIn("halt", reason)
             self.assertTrue(map_brain.snapshot()["paused"])
             self.assertTrue(state.snapshot()["avoidance"]["active"])
+
+    def test_completed_detour_resumes_same_route_step_with_remaining_time(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            route_path = Path(temp_dir) / "route.json"
+            route_path.write_text(
+                json.dumps({"steps": [{"id": "original-leg", "action": "move", "duration_s": 10.0}]}),
+                encoding="utf-8",
+            )
+            with patch("rover_arbiter.time.monotonic", return_value=100.0):
+                state = ArbiterState(arbiter_args())
+                map_brain = MapBrain(str(route_path))
+                map_brain.configure_and_start({})
+                state.set_mode(MODE_AUTO_MAP, "test")
+                state.next_background_payload(map_brain=map_brain)  # consume forced stop
+            with patch("rover_arbiter.time.monotonic", return_value=102.0):
+                map_brain.pause()
+                remaining_before = map_brain.snapshot()["step_remaining_s"]
+                state.avoidance.start(102.0, map_brain)
+            state.avoidance.phase = "final_heading"
+            state.avoidance.phase_until = 102.0
+            with patch("rover_arbiter.time.monotonic", return_value=110.0):
+                for _ in range(3):
+                    state.note_ws63_telemetry(
+                        {"obstacle_enabled": True, "obstacle_valid": True, "distance_mm": 1200}, "test"
+                    )
+                payload, source, completed_reason = state.next_background_payload(map_brain=map_brain)
+                resumed = map_brain.snapshot()
+
+            self.assertEqual(payload, {"T": 1, "L": 0.0, "R": 0.0})
+            self.assertEqual(source, "avoidance")
+            self.assertIn("rejoined", completed_reason)
+            self.assertFalse(resumed["paused"])
+            self.assertEqual(resumed["step_index"], 0)
+            self.assertEqual(resumed["current_step"]["id"], "original-leg")
+            projected_s = state.avoidance.pass_m * state.avoidance.seconds_per_meter
+            self.assertAlmostEqual(resumed["last_resume_progress_s"], projected_s, places=2)
+            self.assertAlmostEqual(resumed["step_remaining_s"], remaining_before - projected_s, places=2)
 
     def test_camera_person_does_not_pause_map_patrol(self) -> None:
         class CameraStub:
