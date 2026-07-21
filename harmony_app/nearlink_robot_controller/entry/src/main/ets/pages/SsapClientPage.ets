@@ -334,8 +334,8 @@ export struct SsapClientPage {
   @State motorAutoInitIssued: boolean = false;
   @State motorStateText: string = '未知';
   @State activeWorkspaceTab: number = 0;
-  @State manualSleSpeed: number = 70;
-  @State manualSpeedText: string = '星闪遥控速度 70%';
+  @State manualSleSpeed: number = 100;
+  @State manualSpeedText: string = '星闪遥控速度 100%';
   @State leftWheelScale: number = 100;
   @State rightWheelScale: number = 100;
   @State wheelCalibrationText: string = '左右轮均为 100%';
@@ -1197,7 +1197,7 @@ export struct SsapClientPage {
           .backgroundColor('#ff475569')
           .enabled(this.serviceReady && !this.commandBusy)
           .onClick(() => {
-            this.manualSleSpeed = 70;
+            this.manualSleSpeed = 100;
             this.applyManualSleSpeed();
           })
       }
@@ -2419,6 +2419,13 @@ export struct SsapClientPage {
       this.robotStatus = '小车服务已就绪，正在自动初始化电机 I...';
       this.motorStateText = '初始化中';
       this.writeCommand('I', true, false);
+      // The UI starts at 100%, so explicitly synchronize that value instead
+      // of depending on whichever default the currently flashed firmware has.
+      setTimeout(() => {
+        if (this.serviceReady && client !== undefined) {
+          this.writeCommand(`V,${this.manualSleSpeed}`, true, false);
+        }
+      }, 450);
     }, 150);
   }
 

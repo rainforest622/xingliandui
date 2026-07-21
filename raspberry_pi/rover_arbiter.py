@@ -210,6 +210,23 @@ def clean_motion_payload(payload: dict[str, Any]) -> dict[str, float | int] | No
     }
 
 
+def adapt_rover_motion(payload: dict[str, Any]) -> dict[str, Any]:
+    """Use open-loop PWM whenever the field rover must drive in reverse."""
+
+    motion = clean_motion_payload(payload)
+    if motion is None:
+        return dict(payload)
+    left = float(motion["L"])
+    right = float(motion["R"])
+    if left < 0.0 < right:
+        return {"T": 11, "L": -255, "R": 255}
+    if right < 0.0 < left:
+        return {"T": 11, "L": 255, "R": -255}
+    if left < 0.0 and right < 0.0:
+        return {"T": 11, "L": round(left * 510), "R": round(right * 510)}
+    return motion
+
+
 def encode_payload(payload: dict[str, Any]) -> bytes:
     return json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8") + b"\n"
 
@@ -661,6 +678,7 @@ class MapBrain:
         self.loop_index = 0
         self.step_started_at = 0.0
         self.step_until = 0.0
+        self.last_resume_progress_s = 0.0
         self.last_loaded_at = 0.0
         self.last_error = ""
         with self.lock:
@@ -796,14 +814,23 @@ class MapBrain:
                 self.paused = True
                 self.paused_at = time.monotonic()
 
-    def resume(self) -> None:
+    def resume(self, projected_progress_s: float = 0.0) -> None:
         now = time.monotonic()
         with self.lock:
             if not self.paused:
                 return
             paused_for = max(0.0, now - self.paused_at)
-            self.step_started_at += paused_for
-            self.step_until += paused_for
+            progress_s = 0.0
+            if self.steps and self.step_index < len(self.steps):
+                step = self.steps[self.step_index]
+                action = str(step.get("action", step.get("type", "move"))).lower()
+                if action == "move":
+                    remaining_at_pause = max(0.0, self.step_until - self.paused_at)
+                    progress_s = min(max(0.0, projected_progress_s), remaining_at_pause)
+            clock_shift = paused_for - progress_s
+            self.step_started_at += clock_shift
+            self.step_until += clock_shift
+            self.last_resume_progress_s = progress_s
             self.paused = False
             self.paused_at = 0.0
 
@@ -859,6 +886,7 @@ class MapBrain:
             "step_index": self.step_index,
             "step_count": len(self.steps),
             "step_remaining_s": round(max(0.0, self.step_until - now), 3) if self.active else 0.0,
+            "last_resume_progress_s": round(self.last_resume_progress_s, 3),
             "current_step": {
                 "id": current.get("id", ""),
                 "name": current.get("name", ""),
@@ -944,6 +972,7 @@ class AvoidanceSupervisor:
         self.backtrack_s = 0.42
         self.side_total_s = 0.0
         self.pass_s = 3.36
+        self.projected_route_progress_s = 0.0
         self.expand_s = 0.98
         self.expansions = 0
         self.last_camera: dict[str, Any] = {"available": False, "person_detected": False}
@@ -967,6 +996,9 @@ class AvoidanceSupervisor:
         # Include the initial reverse distance so the rejoined route position
         # remains ahead of the obstacle instead of returning to its front face.
         self.pass_s = (self.pass_m + self.backtrack_m) * self.seconds_per_meter
+        # Net displacement projected onto the original route is pass_m:
+        # the extra forward backtrack_m merely cancels the initial reverse.
+        self.projected_route_progress_s = self.pass_m * self.seconds_per_meter
         self.active = True
         self.phase = "halt"
         self.phase_until = now + 0.35
@@ -1011,6 +1043,7 @@ class AvoidanceSupervisor:
                 "turn_speed": round(self.turn_speed, 3),
                 "side_total_s": round(self.side_total_s, 3),
                 "pass_s": round(self.pass_s, 3),
+                "projected_route_progress_s": round(self.projected_route_progress_s, 3),
             },
         }
 
@@ -1667,7 +1700,7 @@ class ArbiterState:
                     payload, reason, completed = self.avoidance.next_payload(now, safety, camera, self.range_safety)
                     if completed:
                         if self.mode == MODE_AUTO_MAP and map_brain is not None:
-                            map_brain.resume()
+                            map_brain.resume(self.avoidance.projected_route_progress_s)
                         self.resume_auto_clock_locked(now)
                         self._queue_voice_announcement_locked(
                             "obstacle_avoid",
@@ -2152,15 +2185,16 @@ def rover_reader(rover: serial.Serial, state: ArbiterState, stop_event: threadin
 
 
 def write_rover(rover: serial.Serial, payload: dict[str, Any], source: str, reason: str, state: ArbiterState) -> bool:
+    output_payload = adapt_rover_motion(payload)
     try:
-        encoded = encode_payload(payload)
+        encoded = encode_payload(output_payload)
         rover.write(encoded)
         rover.flush()
     except serial.SerialException as exc:
         print(f"[ROVER] write failed: {exc}", file=sys.stderr)
         return False
     print(f"[ARBITER] {source} {reason} {encoded.decode('utf-8', 'replace').rstrip()}", flush=True)
-    state.note_sent(payload, source, reason)
+    state.note_sent(output_payload, source, reason)
     return True
 
 
