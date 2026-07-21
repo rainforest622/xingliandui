@@ -933,10 +933,12 @@ class MapBrain:
 class AvoidanceSupervisor:
     """Execute a time-balanced detour while the route clock is frozen.
 
-    The rover has one forward ultrasonic sensor and no pan mechanism.  A pair
-    of small calibrated chassis turns therefore turns that sensor into a left/right
-    scan.  The return leg mirrors the selected lateral move so the vehicle
-    reaches the original patrol line before MapBrain resumes its frozen step.
+    The rover has one forward ultrasonic sensor and no pan mechanism.  Every
+    detour therefore follows one deterministic left-hand box: turn left, move
+    left of the obstacle, turn right to the route heading, pass it, then use
+    the mirrored right/right/left turns to rejoin the patrol line.  Each pivot
+    uses the route's calibrated 90-degree duration, avoiding accumulated error
+    from variable-angle side scans and direction selection.
     """
 
     def __init__(self, args: argparse.Namespace) -> None:
@@ -950,8 +952,6 @@ class AvoidanceSupervisor:
         self.scan_timeout_s = max(self.scan_settle_s + 0.20, float(getattr(args, "avoid_scan_timeout_s", 1.50)))
         self.scan_samples_required = max(1, min(4, int(getattr(args, "avoid_scan_samples", 2))))
         self.max_expansions = max(0, int(getattr(args, "avoid_max_expansions", 2)))
-        self.next_scan_side = "left"
-        self.next_preferred_side = "left"
         self.reset("idle")
 
     def reset(self, reason: str = "reset") -> None:
@@ -976,7 +976,7 @@ class AvoidanceSupervisor:
         self.expand_s = 0.98
         self.expansions = 0
         self.last_camera: dict[str, Any] = {"available": False, "person_detected": False}
-        self.scan_first_side = ""
+        self.scan_first_side = "left"
         self.scan_second_side = ""
         self.measurement_reference_sequence = 0
         self.measurement_ready_at = 0.0
@@ -1004,20 +1004,21 @@ class AvoidanceSupervisor:
         self.phase_until = now + 0.35
         self.started_at = now
         self.completed_at = 0.0
-        self.last_reason = "obstacle confirmed; stopping before scan"
-        self.selected_side = ""
+        self.last_reason = "obstacle confirmed; stopping before fixed left detour"
+        self.selected_side = "left"
         self.right_scan_mm = 0
         self.left_scan_mm = 0
         self.expansions = 0
-        self.scan_first_side = self.next_scan_side
-        self.scan_second_side = self._opposite_side(self.scan_first_side)
-        self.next_scan_side = self.scan_second_side
+        self.scan_first_side = "left"
+        self.scan_second_side = ""
 
     def snapshot(self, now: float) -> dict[str, Any]:
         return {
             "active": self.active,
             "phase": self.phase,
             "phase_remaining_s": round(max(0.0, self.phase_until - now), 3) if self.active else 0.0,
+            "strategy": "fixed_left_box",
+            "turn_sequence": ["left", "right", "right", "left"],
             "selected_side": self.selected_side,
             "right_scan_mm": self.right_scan_mm,
             "left_scan_mm": self.left_scan_mm,
@@ -1034,11 +1035,10 @@ class AvoidanceSupervisor:
             "calibration": {
                 "seconds_per_meter": round(self.seconds_per_meter, 3),
                 "turn_s": round(self.turn_s, 3),
-                "scan_angle_deg": round(self.scan_angle_deg, 1),
-                "scan_turn_s": round(self.scan_turn_s, 3),
-                "scan_settle_s": round(self.scan_settle_s, 3),
-                "scan_timeout_s": round(self.scan_timeout_s, 3),
-                "scan_samples_required": self.scan_samples_required,
+                "pivot_angle_deg": 90.0,
+                "fresh_sample_settle_s": round(self.scan_settle_s, 3),
+                "fresh_sample_timeout_s": round(self.scan_timeout_s, 3),
+                "fresh_samples_required": self.scan_samples_required,
                 "drive_speed": round(self.drive_speed, 3),
                 "turn_speed": round(self.turn_speed, 3),
                 "side_total_s": round(self.side_total_s, 3),
@@ -1120,18 +1120,6 @@ class AvoidanceSupervisor:
         return {"T": 1, "L": round(speed, 3), "R": round(speed, 3)}
 
     @staticmethod
-    def _side_turn(side: str) -> str:
-        return "right" if side == "right" else "left"
-
-    @staticmethod
-    def _opposite_side(side: str) -> str:
-        return "left" if side == "right" else "right"
-
-    @staticmethod
-    def _opposite_turn(side: str) -> str:
-        return "left" if side == "right" else "right"
-
-    @staticmethod
     def _is_blocking(safety: dict[str, Any]) -> bool:
         return bool(safety.get("blocking", False))
 
@@ -1164,164 +1152,91 @@ class AvoidanceSupervisor:
         # A new obstacle while travelling on a detour is not safely solvable
         # with a single forward range sensor.  Stop and expose the exact state
         # instead of guessing a second manoeuvre into a possible collision.
-        if self.phase in ("lateral_out", "expand_out", "pass_forward", "return_lateral") and self._is_blocking(safety):
+        if self.phase in ("left_offset", "expand_left_offset", "pass_forward", "return_left_offset") and self._is_blocking(safety):
             return self._fail(f"detour path blocked during {self.phase}")
 
         for _ in range(3):
             if self.phase == "halt":
                 if now < self.phase_until:
                     return dict(STOP_PAYLOAD), self.last_reason, False
-                self._set_phase("backtrack", now, self.backtrack_s, "backtracking before side scan")
+                self._set_phase("backtrack", now, self.backtrack_s, "backtracking before fixed left detour")
                 continue
             if self.phase == "backtrack":
                 if now < self.phase_until:
                     return self._forward_payload(reverse=True), self.last_reason, False
-                self._set_phase(
-                    "scan_first_turn",
-                    now,
-                    self.scan_turn_s,
-                    f"turning {self.scan_first_side} {self.scan_angle_deg:.0f} degrees for ultrasonic scan",
-                )
+                self._set_phase("left_turn_out", now, self.turn_s, "turning left 90 degrees for fixed detour")
                 continue
-            if self.phase == "scan_first_turn":
+            if self.phase == "left_turn_out":
                 if now < self.phase_until:
-                    return self._turn_payload(self._side_turn(self.scan_first_side)), self.last_reason, False
-                self._begin_fresh_measurement_wait(
-                    "scan_first_wait", now, safety, f"sampling fresh {self.scan_first_side} clearance"
-                )
+                    return self._turn_payload("left"), self.last_reason, False
+                self._begin_fresh_measurement_wait("left_clearance_wait", now, safety, "sampling fresh left clearance")
                 continue
-            if self.phase == "scan_first_wait":
-                measurement, pending = self._fresh_measurement_or_timeout(
-                    now, safety, range_guard, f"{self.scan_first_side} scan"
-                )
+            if self.phase == "left_clearance_wait":
+                measurement, pending = self._fresh_measurement_or_timeout(now, safety, range_guard, "left clearance")
                 if pending is not None:
                     return pending
-                if self.scan_first_side == "right":
-                    self.right_scan_mm = measurement or 0
-                else:
-                    self.left_scan_mm = measurement or 0
-                self._set_phase(
-                    "scan_second_turn",
-                    now,
-                    self.scan_turn_s * 2.0,
-                    f"turning {self.scan_second_side} {self.scan_angle_deg * 2.0:.0f} degrees for ultrasonic scan",
-                )
-                continue
-            if self.phase == "scan_second_turn":
-                if now < self.phase_until:
-                    return self._turn_payload(self._side_turn(self.scan_second_side)), self.last_reason, False
-                self._begin_fresh_measurement_wait(
-                    "scan_second_wait", now, safety, f"sampling fresh {self.scan_second_side} clearance"
-                )
-                continue
-            if self.phase == "scan_second_wait":
-                measurement, pending = self._fresh_measurement_or_timeout(
-                    now, safety, range_guard, f"{self.scan_second_side} scan"
-                )
-                if pending is not None:
-                    return pending
-                if self.scan_second_side == "right":
-                    self.right_scan_mm = measurement or 0
-                else:
-                    self.left_scan_mm = measurement or 0
+                self.left_scan_mm = measurement or 0
                 required_mm = int(safety.get("caution_mm", 650))
-                right_clear = self.right_scan_mm >= required_mm
-                left_clear = self.left_scan_mm >= required_mm
-                if not right_clear and not left_clear:
-                    return self._fail("no side clearance; manual assistance required")
-                if right_clear and left_clear and abs(self.right_scan_mm - self.left_scan_mm) < max(80, required_mm // 7):
-                    self.selected_side = self.next_preferred_side
-                elif right_clear and (not left_clear or self.right_scan_mm > self.left_scan_mm):
-                    self.selected_side = "right"
-                else:
-                    self.selected_side = "left"
-                self.next_preferred_side = self._opposite_side(self.selected_side)
-                orient_turn_s = self.scan_turn_s if self.selected_side == self.scan_second_side else self.scan_turn_s * 3.0
-                self._set_phase(
-                    "orient_selected",
-                    now,
-                    orient_turn_s,
-                    f"selecting wider {self.selected_side} passage",
-                )
-                continue
-            if self.phase == "orient_selected":
-                if now < self.phase_until:
-                    return self._turn_payload(self._side_turn(self.selected_side)), self.last_reason, False
-                self._begin_fresh_measurement_wait(
-                    "side_confirm_wait", now, safety, f"confirming fresh {self.selected_side} passage"
-                )
-                continue
-            if self.phase == "side_confirm_wait":
-                measurement, pending = self._fresh_measurement_or_timeout(
-                    now, safety, range_guard, f"{self.selected_side} confirmation"
-                )
-                if pending is not None:
-                    return pending
                 if (measurement or 0) < int(safety.get("caution_mm", 650)):
-                    return self._fail("selected side passage is no longer clear")
-                self._set_phase("lateral_out", now, self.side_total_s, "moving laterally around obstacle")
+                    return self._fail("fixed left passage is not clear")
+                self._set_phase("left_offset", now, self.side_total_s, "moving left of obstacle")
                 continue
-            if self.phase == "lateral_out":
+            if self.phase == "left_offset":
                 if now < self.phase_until:
                     return self._forward_payload(), self.last_reason, False
-                self._set_phase(
-                    "restore_heading",
-                    now,
-                    self.turn_s,
-                    "turning back to original route heading",
-                )
+                self._set_phase("right_turn_out", now, self.turn_s, "turning right 90 degrees to route heading")
                 continue
-            if self.phase == "restore_heading":
+            if self.phase == "right_turn_out":
                 if now < self.phase_until:
-                    return self._turn_payload(self._opposite_turn(self.selected_side)), self.last_reason, False
-                self._begin_fresh_measurement_wait("pass_probe_wait", now, safety, "checking fresh forward passage")
+                    return self._turn_payload("right"), self.last_reason, False
+                self._begin_fresh_measurement_wait("forward_probe_wait", now, safety, "checking fresh forward passage")
                 continue
-            if self.phase == "pass_probe_wait":
+            if self.phase == "forward_probe_wait":
                 measurement, pending = self._fresh_measurement_or_timeout(now, safety, range_guard, "forward probe")
                 if pending is not None:
                     return pending
                 if (measurement or 0) < int(safety.get("caution_mm", 650)):
                     if self.expansions >= self.max_expansions:
-                        return self._fail("forward passage remains blocked after lateral expansion")
+                        return self._fail("forward passage remains blocked after fixed left expansion")
                     self.expansions += 1
-                    self._set_phase("expand_turn", now, self.turn_s, "widening lateral clearance")
+                    self._set_phase("expand_left_turn", now, self.turn_s, "turning left to widen fixed detour")
                     continue
-                self._set_phase("pass_forward", now, self.pass_s, "passing obstacle on selected side")
+                self._set_phase("pass_forward", now, self.pass_s, "passing obstacle on fixed left side")
                 continue
-            if self.phase == "expand_turn":
+            if self.phase == "expand_left_turn":
                 if now < self.phase_until:
-                    return self._turn_payload(self._side_turn(self.selected_side)), self.last_reason, False
-                self._set_phase("expand_out", now, self.expand_s, "increasing side clearance")
+                    return self._turn_payload("left"), self.last_reason, False
+                self._set_phase("expand_left_offset", now, self.expand_s, "increasing left clearance")
                 continue
-            if self.phase == "expand_out":
+            if self.phase == "expand_left_offset":
                 if now < self.phase_until:
                     return self._forward_payload(), self.last_reason, False
                 self.side_total_s += self.expand_s
-                self._set_phase("expand_restore", now, self.turn_s, "restoring route heading after expansion")
+                self._set_phase("expand_right_turn", now, self.turn_s, "turning right to route heading after expansion")
                 continue
-            if self.phase == "expand_restore":
+            if self.phase == "expand_right_turn":
                 if now < self.phase_until:
-                    return self._turn_payload(self._opposite_turn(self.selected_side)), self.last_reason, False
-                self._set_phase("pass_probe_wait", now, self.scan_settle_s, "rechecking forward passage")
+                    return self._turn_payload("right"), self.last_reason, False
+                self._begin_fresh_measurement_wait("forward_probe_wait", now, safety, "rechecking forward passage")
                 continue
             if self.phase == "pass_forward":
                 if now < self.phase_until:
                     return self._forward_payload(), self.last_reason, False
-                self._set_phase("return_turn", now, self.turn_s, "turning toward original patrol line")
+                self._set_phase("right_turn_return", now, self.turn_s, "turning right 90 degrees toward patrol line")
                 continue
-            if self.phase == "return_turn":
+            if self.phase == "right_turn_return":
                 if now < self.phase_until:
-                    return self._turn_payload(self._opposite_turn(self.selected_side)), self.last_reason, False
-                self._set_phase("return_lateral", now, self.side_total_s, "returning to original patrol line")
+                    return self._turn_payload("right"), self.last_reason, False
+                self._set_phase("return_left_offset", now, self.side_total_s, "returning to original patrol line")
                 continue
-            if self.phase == "return_lateral":
+            if self.phase == "return_left_offset":
                 if now < self.phase_until:
                     return self._forward_payload(), self.last_reason, False
-                self._set_phase("final_heading", now, self.turn_s, "aligning with original route heading")
+                self._set_phase("left_turn_restore", now, self.turn_s, "turning left 90 degrees to restore route heading")
                 continue
-            if self.phase == "final_heading":
+            if self.phase == "left_turn_restore":
                 if now < self.phase_until:
-                    return self._turn_payload(self._side_turn(self.selected_side)), self.last_reason, False
+                    return self._turn_payload("left"), self.last_reason, False
                 self.active = False
                 self.phase = "complete"
                 self.completed_at = now

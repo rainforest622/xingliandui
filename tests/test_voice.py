@@ -103,11 +103,14 @@ class VoiceIntentTests(unittest.TestCase):
         supervisor.start(0.0, None)
 
         phases: list[str] = []
+        pivot_commands: list[tuple[float, float]] = []
         now = 0.0
         complete = False
         for _ in range(32):
             payload, _reason, complete = supervisor.next_payload(now, clear, {"person_detected": False})
             phases.append(supervisor.phase)
+            if float(payload["L"]) * float(payload["R"]) < 0:
+                pivot_commands.append((float(payload["L"]), float(payload["R"])))
             if complete:
                 self.assertEqual(payload, {"T": 1, "L": 0.0, "R": 0.0})
                 break
@@ -115,8 +118,14 @@ class VoiceIntentTests(unittest.TestCase):
 
         self.assertTrue(complete)
         self.assertEqual(supervisor.selected_side, "left")
-        self.assertIn("lateral_out", phases)
-        self.assertIn("return_lateral", phases)
+        self.assertIn("left_turn_out", phases)
+        self.assertIn("left_offset", phases)
+        self.assertIn("right_turn_out", phases)
+        self.assertIn("right_turn_return", phases)
+        self.assertIn("return_left_offset", phases)
+        self.assertIn("left_turn_restore", phases)
+        self.assertEqual(pivot_commands, [(-0.5, 0.5), (0.5, -0.5), (0.5, -0.5), (-0.5, 0.5)])
+        self.assertEqual(supervisor.snapshot(now)["strategy"], "fixed_left_box")
         self.assertEqual(supervisor.phase, "complete")
 
     def test_camera_person_is_not_an_avoidance_motion_gate(self) -> None:
@@ -130,23 +139,26 @@ class VoiceIntentTests(unittest.TestCase):
         self.assertEqual(supervisor.phase, "backtrack")
         self.assertIn("backtracking", reason)
 
-    def test_equal_side_scans_alternate_the_detour_direction(self) -> None:
+    def test_fixed_left_detour_never_switches_to_right_side(self) -> None:
         supervisor = AvoidanceSupervisor(arbiter_args())
         clear = {"state": "clear", "blocking": False, "filtered_mm": 1200, "caution_mm": 380}
 
-        def select_side(start_at: float) -> str:
+        def complete_detour(start_at: float) -> str:
             supervisor.start(start_at, None)
             now = start_at
-            for _ in range(12):
+            for _ in range(32):
                 supervisor.next_payload(now, clear, {"person_detected": False})
-                if supervisor.selected_side:
+                if supervisor.phase == "complete":
                     return supervisor.selected_side
                 now = max(now + 0.01, supervisor.phase_until + 0.01)
-            self.fail("avoidance did not select a side")
+            self.fail("avoidance did not complete")
 
-        self.assertEqual(select_side(0.0), "left")
-        self.assertEqual(select_side(20.0), "right")
-        self.assertEqual(supervisor.snapshot(20.0)["calibration"]["scan_angle_deg"], 45.0)
+        self.assertEqual(complete_detour(0.0), "left")
+        self.assertEqual(complete_detour(20.0), "left")
+        snapshot = supervisor.snapshot(20.0)
+        self.assertEqual(snapshot["scan_first_side"], "left")
+        self.assertEqual(snapshot["scan_second_side"], "")
+        self.assertEqual(snapshot["right_scan_mm"], 0)
 
     def test_blocked_map_patrol_starts_detour_and_freezes_route(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -195,7 +207,7 @@ class VoiceIntentTests(unittest.TestCase):
                 map_brain.pause()
                 remaining_before = map_brain.snapshot()["step_remaining_s"]
                 state.avoidance.start(102.0, map_brain)
-            state.avoidance.phase = "final_heading"
+            state.avoidance.phase = "left_turn_restore"
             state.avoidance.phase_until = 102.0
             with patch("rover_arbiter.time.monotonic", return_value=110.0):
                 for _ in range(3):
@@ -279,7 +291,7 @@ class VoiceIntentTests(unittest.TestCase):
         )
         self.assertEqual(guard.decision(1.0)["state"], "sensor_wait")
 
-    def test_side_scan_waits_for_post_turn_range_samples(self) -> None:
+    def test_left_clearance_waits_for_post_turn_range_samples(self) -> None:
         args = arbiter_args()
         args.avoid_scan_settle_s = 0.20
         args.avoid_scan_timeout_s = 1.0
@@ -295,16 +307,16 @@ class VoiceIntentTests(unittest.TestCase):
         supervisor.next_payload(0.80, safety, {}, guard)
         supervisor.next_payload(1.20, safety, {}, guard)
 
-        # The pre-turn 1200 mm values must not be accepted as a left scan.
-        payload, reason, complete = supervisor.next_payload(1.45, safety, {}, guard)
+        # The pre-turn 1200 mm values must not be accepted as left clearance.
+        payload, reason, complete = supervisor.next_payload(1.55, safety, {}, guard)
         self.assertEqual(payload, {"T": 1, "L": 0.0, "R": 0.0})
         self.assertFalse(complete)
         self.assertIn("sampling fresh", reason)
         self.assertEqual(supervisor.left_scan_mm, 0)
 
-        for timestamp in (1.46, 1.56):
+        for timestamp in (1.56, 1.66):
             guard.observe({"obstacle_enabled": True, "obstacle_valid": True, "distance_mm": 4000}, timestamp)
-        supervisor.next_payload(1.60, guard.decision(1.60), {}, guard)
+        supervisor.next_payload(1.76, guard.decision(1.76), {}, guard)
         self.assertEqual(supervisor.left_scan_mm, 4000)
 
     def test_chinese_command_matching(self) -> None:
