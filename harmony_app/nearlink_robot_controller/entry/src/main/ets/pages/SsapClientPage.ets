@@ -431,8 +431,6 @@ export struct SsapClientPage {
   @State inspectionAlarmFlags: number = 0;
   @State inspectionDetailText: string = '自动路线巡检：P 一键启动，G 查轨迹，M 查传感器';
   @State inspectionLastUpdateText: string = '--:--:--';
-  @State inspectionSnapshotText: string = '等待小车返回巡检快照';
-  @State inspectionSnapshotTime: string = '--:--:--';
   @State phoneEnvAlarmActive: boolean = false;
   @State phoneEnvAlarmText: string = '手机端环境报警未触发';
   @State phoneVoiceEmergencyActive: boolean = false;
@@ -518,6 +516,7 @@ export struct SsapClientPage {
           } else {
             this.DevicePanel();
             this.ScanPanel();
+            this.ResponsePanel();
           }
         }
         .width('100%')
@@ -1442,27 +1441,6 @@ export struct SsapClientPage {
         this.PhoneVoiceEmergencyBanner();
       }
 
-      Row() {
-        Text('小车返回巡检快照')
-          .fontSize(12)
-          .fontWeight(FontWeight.Bold)
-          .fontColor('#ff0f172a')
-          .layoutWeight(1)
-        Text(`更新 ${this.inspectionSnapshotTime}`)
-          .fontSize(11)
-          .fontColor('#ff64748b')
-      }
-      .width('100%')
-      .margin({ top: 10 })
-
-      Text(this.inspectionSnapshotText)
-        .fontSize(12)
-        .fontColor('#ff475569')
-        .maxLines(2)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .width('100%')
-        .margin({ top: 4 })
-
       Text(this.inspectionDetailText)
         .fontSize(12)
         .fontColor('#ff475569')
@@ -1974,6 +1952,41 @@ export struct SsapClientPage {
       .height(40)
       .margin({ right: 6, bottom: 6 })
       .backgroundColor('#ff475569')
+  }
+
+  @Builder
+  ResponsePanel() {
+    Column() {
+      Text('小车返回')
+        .fontSize(16)
+        .fontWeight(FontWeight.Bold)
+        .fontColor('#ff0f172a')
+        .width('100%')
+      Text(this.responseSummary)
+        .fontSize(13)
+        .fontColor('#ff334155')
+        .width('100%')
+        .padding(8)
+        .margin({ top: 6, bottom: 6 })
+        .backgroundColor('#ffe0f2fe')
+        .borderRadius(8)
+      Scroll() {
+        Text(this.lastResponse.length !== 0 ? this.lastResponse : '暂无原始返回。')
+          .fontSize(13)
+          .fontFamily('monospace')
+          .width('100%')
+          .padding(8)
+      }
+      .width('100%')
+      .height('20%')
+      .backgroundColor('#fff1f5f9')
+      .borderRadius(8)
+    }
+    .width('100%')
+    .padding(12)
+    .margin({ top: 10, bottom: 10 })
+    .backgroundColor('#ffffffff')
+    .borderRadius(8)
   }
 
   startRobotScan() {
@@ -2853,8 +2866,6 @@ export struct SsapClientPage {
     this.inspectionAlarmFlags = 0;
     this.inspectionDetailText = '自动路线巡检：P 一键启动，G 查轨迹，M 查传感器';
     this.inspectionLastUpdateText = '--:--:--';
-    this.inspectionSnapshotText = '等待小车返回巡检快照';
-    this.inspectionSnapshotTime = '--:--:--';
     this.phoneEnvAlarmActive = false;
     this.phoneEnvAlarmText = '手机端环境报警未触发';
     this.lastPhoneEnvAlarmMask = 0;
@@ -3023,9 +3034,8 @@ export struct SsapClientPage {
     this.handlePhoneEnvironmentAlarm(alarmFlags, temperature, humidity);
     this.inspectionStatusText = this.environmentAlarmMask(alarmFlags) !== 0 ? '温湿度异常报警' :
       (this.inspectionEnabled ? '自动路线巡检中' : '巡检快照已更新');
-    this.inspectionSnapshotText =
+    this.inspectionDetailText =
       `运行 ${Math.floor(uptimeMs / 1000)}s，采样 ${sampleCount}，环境龄 ${this.ageText(envAge)}，距离龄 ${this.ageText(obstacleAge)}`;
-    this.inspectionSnapshotTime = this.nowText();
   }
 
   obstacleReasonName(reason: number): string {
