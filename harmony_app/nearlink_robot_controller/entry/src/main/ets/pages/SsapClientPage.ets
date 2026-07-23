@@ -167,6 +167,14 @@ interface PiCameraAiConfigResponse {
   error?: string;
 }
 
+interface PiCameraAlarmPayload {
+  time?: string;
+  filename?: string;
+  kind?: string;
+  detail?: string;
+  person_count?: number;
+}
+
 interface CameraAddress {
   baseUrl: string;
   path: string;
@@ -412,6 +420,8 @@ export struct SsapClientPage {
   @State cameraAiStatusText: string = 'AI 检测：人形关，烟火关';
   @State cameraVisionAlarmActive: boolean = false;
   @State cameraVisionAlarmText: string = '视觉告警未触发';
+  @State cameraAlarms: Array<PiCameraAlarmPayload> = [];
+  @State cameraAlarmBusy: boolean = false;
   @State inspectionEnabled: boolean = false;
   @State inspectionStatusText: string = '等待启动巡检';
   @State inspectionDistanceText: string = '--';
@@ -747,6 +757,60 @@ export struct SsapClientPage {
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .width('100%')
         .margin({ top: 6 })
+
+      if (this.cameraAlarms.length > 0) {
+        Column() {
+          Row() {
+            Text('告警留证')
+              .fontSize(13)
+              .fontWeight(FontWeight.Bold)
+              .fontColor('#ff991b1b')
+              .layoutWeight(1)
+            Text(`最近 ${this.cameraAlarms.length} 条`)
+              .fontSize(11)
+              .fontColor('#ff64748b')
+          }
+          .width('100%')
+
+          ForEach(this.cameraAlarms, (alarm: PiCameraAlarmPayload) => {
+            Row({ space: 8 }) {
+              Image(this.cameraAlarmImageUrl(alarm))
+                .width(104)
+                .height(64)
+                .objectFit(ImageFit.Cover)
+                .borderRadius(4)
+                .onClick(() => {
+                  if (alarm.filename !== undefined) {
+                    this.loadCameraPath(`/snapshots/${alarm.filename}`);
+                  }
+                })
+              Column() {
+                Text(this.cameraAlarmKindText(alarm.kind))
+                  .fontSize(12)
+                  .fontWeight(FontWeight.Medium)
+                  .fontColor('#ff991b1b')
+                  .maxLines(1)
+                Text(alarm.time === undefined ? '--' : alarm.time)
+                  .fontSize(11)
+                  .fontColor('#ff64748b')
+                  .margin({ top: 2 })
+                Text(alarm.detail === undefined ? '已保存带检测框照片' : alarm.detail)
+                  .fontSize(10)
+                  .fontColor('#ff475569')
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                  .margin({ top: 2 })
+              }
+              .layoutWeight(1)
+              .alignItems(HorizontalAlign.Start)
+            }
+            .width('100%')
+            .padding({ top: 6, bottom: 6 })
+          }, (alarm: PiCameraAlarmPayload) => `${alarm.filename}`)
+        }
+        .width('100%')
+        .margin({ top: 10 })
+      }
 
       Row({ space: 8 }) {
         TextInput({ text: this.cameraBaseDraft, placeholder: 'http://192.168.43.42:8080' })
@@ -4880,6 +4944,7 @@ export struct SsapClientPage {
       try {
         let payload = JSON.parse(resultText) as PiCameraStatusPayload;
         this.updateCameraStatus(payload);
+        this.loadCameraAlarms();
       } catch (parseErr) {
         this.handleCameraStatusFailure(`状态解析失败：${(parseErr as Error).message}`);
       }
@@ -4941,6 +5006,59 @@ export struct SsapClientPage {
       this.showInspectionToast(this.cameraVisionAlarmText, 4200);
     }
     this.lastCameraVisionAlertSignature = signature;
+  }
+
+  loadCameraAlarms() {
+    if (this.cameraAlarmBusy || !this.cameraOnline) {
+      return;
+    }
+    this.cameraAlarmBusy = true;
+    let request = http.createHttp();
+    request.request(`${this.cameraBaseUrl}/alarms`, {
+      method: http.RequestMethod.GET,
+      connectTimeout: 2000,
+      readTimeout: 2000,
+      expectDataType: http.HttpDataType.STRING
+    }, (err: BusinessError, data: http.HttpResponse) => {
+      this.cameraAlarmBusy = false;
+      try {
+        request.destroy();
+      } catch (destroyErr) {
+        hilog.warn(this.domainId, this.logTag, `camera alarms request destroy ignored: ${(destroyErr as BusinessError).code}`);
+      }
+      if ((err !== undefined && err !== null) || data.responseCode < 200 || data.responseCode >= 300) {
+        return;
+      }
+      try {
+        let resultText = typeof data.result === 'string' ? data.result : JSON.stringify(data.result);
+        let alarms = JSON.parse(resultText) as Array<PiCameraAlarmPayload>;
+        if (Array.isArray(alarms)) {
+          this.cameraAlarms = alarms.slice(Math.max(0, alarms.length - 6)).reverse();
+        }
+      } catch (parseErr) {
+        return;
+      }
+    });
+  }
+
+  cameraAlarmImageUrl(alarm: PiCameraAlarmPayload): string {
+    return alarm.filename === undefined ? '' : `${this.cameraBaseUrl}/snapshots/${alarm.filename}`;
+  }
+
+  cameraAlarmKindText(kind: string | undefined): string {
+    if (kind === 'person') {
+      return '人员告警';
+    }
+    if (kind === 'fire' || kind === 'person_fire') {
+      return '火焰告警';
+    }
+    if (kind === 'smoke' || kind === 'person_smoke') {
+      return '烟雾告警';
+    }
+    if (kind === 'person_fire_smoke') {
+      return '人员、火焰与烟雾告警';
+    }
+    return '火焰与烟雾告警';
   }
 
   setCameraAiConfig(personEnabled: boolean, fireSmokeEnabled: boolean) {

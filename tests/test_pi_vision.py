@@ -5,6 +5,7 @@ import json
 import threading
 import unittest
 import urllib.request
+import tempfile
 from pathlib import Path
 
 import cv2
@@ -14,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "raspberry_pi"))
 
 from detection.fire_smoke_detector import FireSmokeDetector, HazardDetection
+from alarm.manager import AlarmManager
 from run import AiRuntimeConfig, AppServer, RequestHandler
 
 
@@ -47,6 +49,23 @@ class _AlarmStub:
 
 
 class FireSmokeDetectorTests(unittest.TestCase):
+    def test_alarm_history_keeps_distinct_event_photos_with_annotations(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            alarm = AlarmManager(snapshot_dir=temp_dir, cooldown_sec=60.0)
+            frame = np.zeros((80, 120, 3), dtype=np.uint8)
+            frame[10:50, 20:80] = (0, 0, 255)
+
+            self.assertTrue(alarm.feed(True, frame, kind="person", detail="person alert"))
+            self.assertTrue(alarm.feed(True, frame, kind="fire_smoke", detail="fire alert"))
+            self.assertFalse(alarm.feed(True, frame, kind="person", detail="repeat person"))
+
+            history = alarm.get_alarms()
+            self.assertEqual([item["kind"] for item in history], ["person", "fire_smoke"])
+            for item in history:
+                snapshot = cv2.imread(str(Path(temp_dir) / item["filename"]))
+                self.assertIsNotNone(snapshot)
+                self.assertGreater(np.count_nonzero(snapshot), 0)
+
     def test_clear_frame_has_no_fire_or_smoke(self) -> None:
         detector = FireSmokeDetector(cooldown_sec=0.0, model_path="")
         frame = np.zeros((120, 160, 3), dtype=np.uint8)

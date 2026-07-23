@@ -23,7 +23,7 @@ class AlarmManager:
         self.max_history = max_history
         self._lock = threading.Lock()
         self._active = False
-        self._last_triggered: float = 0.0
+        self._last_triggered_by_kind: dict[str, float] = {}
         self._history: list[dict] = []
         self._load_history()
 
@@ -35,6 +35,7 @@ class AlarmManager:
     def clear(self) -> None:
         with self._lock:
             self._active = False
+            self._last_triggered_by_kind.clear()
 
     def feed(
         self,
@@ -49,15 +50,16 @@ class AlarmManager:
             self._active = alarm_active
             if not alarm_active:
                 return False
-            if now - self._last_triggered < self.cooldown_sec:
+            if now - self._last_triggered_by_kind.get(kind, 0.0) < self.cooldown_sec:
                 return False
-            self._last_triggered = now
+            self._last_triggered_by_kind[kind] = now
 
         if frame is not None:
             ts = time.strftime("%Y%m%d_%H%M%S")
-            filename = f"alarm_{ts}.jpg"
+            filename = f"alarm_{ts}_{time.time_ns() % 1_000_000_000:09d}.jpg"
             path = self._dir / filename
-            cv2.imwrite(str(path), frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            if not cv2.imwrite(str(path), frame, [cv2.IMWRITE_JPEG_QUALITY, 85]):
+                return False
 
             entry = {
                 "time": ts,

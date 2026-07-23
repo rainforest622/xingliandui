@@ -352,31 +352,38 @@ class RequestHandler(server.BaseHTTPRequestHandler):
                 fire_smoke_result = self.server.fire_smoke.last_result
 
             if person_present:
-                self.server.voice.notify("person_alert", "person detected near the patrol route")
+                self.server.voice.notify("person_alert", "检测到人员靠近巡检区域，请注意避让。")
             if fire_smoke_result.active:
+                hazard = "火焰" if fire_smoke_result.fire else "烟雾"
                 self.server.voice.notify(
                     "fire_smoke_alert",
-                    "visual fire or smoke abnormality detected; patrol continues",
+                    f"检测到{hazard}异常，巡检继续，请及时处理。",
                     fire_smoke_result.snapshot(),
                 )
-
-            alarm_active = bool(person_present or fire_smoke_result.active)
-            alarm_kind = "person" if person_present else "fire_smoke"
-            if person_present and fire_smoke_result.active:
-                alarm_kind = "person_fire_smoke"
-            self.server.alarm.feed(
-                alarm_active,
-                frame,
-                person_count,
-                kind=alarm_kind,
-                detail="visual alert; patrol is not stopped by camera service",
-            )
 
             annotated = frame.copy()
             if person_enabled:
                 annotated = self.server.detector.annotate(annotated)
             if fire_smoke_enabled:
                 annotated = self.server.fire_smoke.annotate(annotated)
+
+            alarm_active = bool(person_present or fire_smoke_result.active)
+            alarm_labels: list[str] = []
+            if person_present:
+                alarm_labels.append("person")
+            if fire_smoke_result.fire:
+                alarm_labels.append("fire")
+            if fire_smoke_result.smoke:
+                alarm_labels.append("smoke")
+            alarm_kind = "_".join(alarm_labels) if alarm_labels else "visual"
+            self.server.alarm.feed(
+                alarm_active,
+                annotated,
+                person_count,
+                kind=alarm_kind,
+                detail="visual alert; ASRPRO announced it and patrol continues",
+            )
+
             ok, encoded = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 75])
             if not ok:
                 continue
