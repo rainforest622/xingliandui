@@ -270,7 +270,6 @@ interface PiVoiceTelemetry {
   threshold_mm?: number;
   obstacle_reason?: number;
   alarm_flags?: number;
-  sample_count?: number;
   age_s?: number;
 }
 
@@ -465,7 +464,6 @@ export struct SsapClientPage {
   inspectionPollBusy: boolean = false;
   lastInspectionSlePollMs: number = 0;
   lastSleMonitorAtMs: number = 0;
-  lastInspectionSampleCount: number = -1;
   voiceTelemetryBusy: boolean = false;
   lastPhoneEnvAlarmMask: number = 0;
   lastPhoneEnvAlarmToastMs: number = 0;
@@ -1465,6 +1463,14 @@ export struct SsapClientPage {
         .width('100%')
         .margin({ top: 4 })
 
+      Text(this.inspectionDetailText)
+        .fontSize(12)
+        .fontColor('#ff475569')
+        .maxLines(2)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .width('100%')
+        .margin({ top: 8 })
+
       Row({ space: 8 }) {
         Button(this.inspectionEnabled ? '暂停巡检' : '启动自动路线巡检')
           .height(36)
@@ -2344,7 +2350,6 @@ export struct SsapClientPage {
     this.inspectionPollBusy = false;
     this.lastInspectionSlePollMs = 0;
     this.lastSleMonitorAtMs = 0;
-    this.lastInspectionSampleCount = -1;
   }
 
   toggleInspectionMonitor() {
@@ -2384,9 +2389,7 @@ export struct SsapClientPage {
     }
     this.inspectionPollBusy = true;
     this.lastInspectionSlePollMs = now;
-    if (force) {
-      this.inspectionStatusText = '正在读取巡检快照';
-    }
+    this.inspectionStatusText = '正在读取巡检快照';
     // M contains the current obstacle and environment snapshot. Sending one
     // command per cycle preserves SLE command headroom for manual control.
     this.writeCommand('M', true, false);
@@ -2454,8 +2457,7 @@ export struct SsapClientPage {
       }
       if (err !== undefined && err !== null || data.responseCode < 200 || data.responseCode >= 300) {
         if (force && !this.inspectionEnabled) {
-          this.inspectionSnapshotText = '树莓派实时传感器服务暂不可达';
-          this.inspectionSnapshotTime = this.nowText();
+          this.inspectionDetailText = '树莓派实时传感器服务暂不可达';
         }
         return;
       }
@@ -2467,8 +2469,7 @@ export struct SsapClientPage {
         let telemetry = payload.telemetry;
         if (telemetry === undefined || telemetry.available !== true) {
           if (force && !this.inspectionEnabled) {
-            this.inspectionSnapshotText = '尚未收到 WS63 实时传感器快照';
-            this.inspectionSnapshotTime = this.nowText();
+            this.inspectionDetailText = '尚未收到 WS63 实时传感器快照';
           }
           return;
         }
@@ -2483,32 +2484,27 @@ export struct SsapClientPage {
         let threshold = Number(telemetry.threshold_mm === undefined ? 0 : telemetry.threshold_mm);
         let reason = Number(telemetry.obstacle_reason === undefined ? 0 : telemetry.obstacle_reason);
         let alarms = Number(telemetry.alarm_flags === undefined ? 0 : telemetry.alarm_flags);
-        let sampleCount = Number(telemetry.sample_count === undefined ? -1 : telemetry.sample_count);
         // Prefer the direct SLE monitor frame while it is fresh. The Pi endpoint
-        // remains the fallback if it has a newer WS63 sample.
+        // remains the fallback if the SLE response is temporarily unavailable.
         let directMonitorFresh = Date.now() - this.lastSleMonitorAtMs < INSPECTION_SLE_FRESH_MS;
-        let piSampleNewer = sampleCount >= 0 && sampleCount > this.lastInspectionSampleCount;
-        if (!directMonitorFresh || piSampleNewer) {
+        if (!directMonitorFresh) {
           this.updateInspectionEnv(environmentValid, temperature, humidity, false);
           this.updateInspectionObstacle(obstacleEnabled, obstacleValid, obstacleBlocked, distance, threshold, reason);
           this.inspectionAlarmFlags = alarms;
           this.inspectionAlarmText = this.inspectionAlarmSummary(alarms);
           this.handlePhoneEnvironmentAlarm(alarms, temperature, humidity);
-          if (sampleCount >= 0) {
-            this.lastInspectionSampleCount = sampleCount;
-          }
         }
 
-        if (!directMonitorFresh) {
-          this.inspectionStatusText = this.environmentAlarmMask(alarms) !== 0 ? '温湿度异常报警' :
-            (this.inspectionEnabled ? '自动路线巡检中' : '实时感知数据已同步');
-          this.inspectionSnapshotText = `树莓派实时快照：温度 ${this.formatDeciValue(temperature)}°C，湿度 ${this.formatDeciValue(humidity)}%，距离 ${distance}mm`;
-          this.inspectionSnapshotTime = this.nowText();
-        }
+        let voiceAction = payload.voice === undefined ? '' : this.textOrDefault(payload.voice.last_action, '');
+        let voiceIntent = payload.voice === undefined ? '' : this.textOrDefault(payload.voice.last_intent, '');
+        let sourceText = voiceAction.length > 0 ? `语音请求：${voiceIntent}，${voiceAction}` : '实时数据已同步';
+        this.inspectionDetailText = `${sourceText}；数据源：树莓派 / WS63`;
+        this.inspectionStatusText = this.environmentAlarmMask(alarms) !== 0 ? '温湿度异常报警' :
+          (this.inspectionEnabled ? '自动路线巡检中' : '实时感知数据已同步');
+        this.inspectionLastUpdateText = this.nowText();
       } catch (parseErr) {
         if (force && !this.inspectionEnabled) {
-          this.inspectionSnapshotText = '树莓派实时传感器响应解析失败';
-          this.inspectionSnapshotTime = this.nowText();
+          this.inspectionDetailText = '树莓派实时传感器响应解析失败';
         }
       }
     });
@@ -2859,7 +2855,6 @@ export struct SsapClientPage {
     this.inspectionLastUpdateText = '--:--:--';
     this.inspectionSnapshotText = '等待小车返回巡检快照';
     this.inspectionSnapshotTime = '--:--:--';
-    this.lastInspectionSampleCount = -1;
     this.phoneEnvAlarmActive = false;
     this.phoneEnvAlarmText = '手机端环境报警未触发';
     this.lastPhoneEnvAlarmMask = 0;
@@ -3019,7 +3014,6 @@ export struct SsapClientPage {
     let obstacleAge = Number(parts[16]);
 
     this.lastSleMonitorAtMs = Date.now();
-    this.lastInspectionSampleCount = sampleCount;
     this.motorStateText = motorReady ? '已就绪' : '未就绪';
     this.motionStateText = moving ? '运动中' : '已停止';
     this.updateInspectionEnv(envOk, temperature, humidity, false);
@@ -3029,11 +3023,8 @@ export struct SsapClientPage {
     this.handlePhoneEnvironmentAlarm(alarmFlags, temperature, humidity);
     this.inspectionStatusText = this.environmentAlarmMask(alarmFlags) !== 0 ? '温湿度异常报警' :
       (this.inspectionEnabled ? '自动路线巡检中' : '巡检快照已更新');
-    let environmentText = envOk ?
-      `温度 ${this.formatDeciValue(temperature)}°C，湿度 ${this.formatDeciValue(humidity)}%` : '环境数据无效';
-    let distanceText = obstacleValid ? `${distance}mm / 阈值 ${threshold}mm` : `距离无效（${this.obstacleReasonName(reason)}）`;
     this.inspectionSnapshotText =
-      `${environmentText}；距离 ${distanceText}；${obstacleBlocked ? '前方障碍' : '前方安全'}；采样 ${sampleCount}`;
+      `运行 ${Math.floor(uptimeMs / 1000)}s，采样 ${sampleCount}，环境龄 ${this.ageText(envAge)}，距离龄 ${this.ageText(obstacleAge)}`;
     this.inspectionSnapshotTime = this.nowText();
   }
 
