@@ -128,7 +128,6 @@ interface SavedRouteEntry {
   imageUri: string;
   points: Array<RoutePointModel>;
   lengthText: string;
-  speedText: string;
   loopText: string;
   secondsPerMeterText: string;
   ninetyDegreeTurnMsText: string;
@@ -381,7 +380,6 @@ export struct SsapClientPage {
   @State routeTurnDurationText: string = '0.686';
   @State routeMoveSpeedText: string = '0.24';
   @State routeTurnSpeedText: string = '0.5';
-  @State routeWs63SpeedText: string = '100';
   @State routeLoopText: string = '1';
   @State routeLengthText: string = '25.2';
   @State routeSecondsPerMeterText: string = '2.80';
@@ -1203,25 +1201,6 @@ export struct SsapClientPage {
         .layoutWeight(1)
 
         Column() {
-          Text('速度')
-            .fontSize(11)
-            .fontColor('#ff64748b')
-          TextInput({ text: this.routeWs63SpeedText, placeholder: '100' })
-            .height(34)
-            .fontSize(13)
-            .backgroundColor('#fff8fafc')
-            .borderRadius(6)
-            .onChange((value: string) => {
-              this.routeWs63SpeedText = value;
-              this.updateRoutePlanSummary();
-            })
-          Text('30-100')
-            .fontSize(10)
-            .fontColor('#ff94a3b8')
-        }
-        .layoutWeight(1)
-
-        Column() {
           Text('循环')
             .fontSize(11)
             .fontColor('#ff64748b')
@@ -1295,6 +1274,7 @@ export struct SsapClientPage {
         .onChange((value: number) => {
           this.manualSleSpeed = Math.round(value);
           this.manualSpeedText = `待应用：${this.manualSleSpeed}%`;
+          this.updateRoutePlanSummary();
         })
 
       Row({ space: 8 }) {
@@ -1319,6 +1299,7 @@ export struct SsapClientPage {
           .enabled(this.serviceReady && !this.commandBusy)
           .onClick(() => {
             this.manualSleSpeed = 100;
+            this.updateRoutePlanSummary();
             this.applyManualSleSpeed();
           })
       }
@@ -3338,6 +3319,7 @@ export struct SsapClientPage {
         if ((status === 'OK' || status === 'CFG') && speed === speed) {
           this.manualSleSpeed = speed;
           this.manualSpeedText = `已生效：星闪遥控速度 ${speed}%`;
+          this.updateRoutePlanSummary();
         } else {
           this.manualSpeedText = '星闪遥控速度下发失败';
         }
@@ -3390,7 +3372,6 @@ export struct SsapClientPage {
             speed = Number(parts[4]);
             loops = Number(parts[5]);
           }
-          this.routeWs63SpeedText = `${speed}`;
           this.routeLoopText = `${loops}`;
           this.routeSegmentCount = segmentCount;
           this.routeOnline = true;
@@ -3398,7 +3379,7 @@ export struct SsapClientPage {
             this.routeImportBusy = false;
             this.routeStatusText = status === 'OK' ? 'WS63 已保存完整路线' : 'WS63 当前路线配置';
           }
-          this.routeDetailText = `${segmentCount} 段路线，速度 ${speed}，${loops === 0 ? '连续循环' : `${loops}圈`}`;
+          this.routeDetailText = `${segmentCount} 段路线，星闪遥控速度控制，${loops === 0 ? '连续循环' : `${loops}圈`}`;
         } else if (status === 'ERR') {
           this.routeOnline = false;
           this.routeImportBusy = false;
@@ -3678,7 +3659,6 @@ export struct SsapClientPage {
     this.selectedSavedRouteId = '';
     this.routeTool = ROUTE_TOOL_SEGMENT;
     this.routeLengthText = '25.2';
-    this.routeWs63SpeedText = '100';
     this.routeLoopText = '1';
     this.updateRoutePlanSummary();
     setTimeout((): void => {
@@ -4224,12 +4204,15 @@ export struct SsapClientPage {
 
   currentRoutePlan(): RoutePlanModel {
     let totalMeters = this.routeNumberFromText(this.routeLengthText, 25.2, 0.5, 200);
-    let speed = this.routeIntFromText(this.routeWs63SpeedText, 100, 30, 100);
     let calibration: RouteCalibrationModel = {
       secondsPerMeterAtCruiseSpeed: this.routeNumberFromText(this.routeSecondsPerMeterText, 2.8, 0.15, 5),
       ninetyDegreeTurnMsAtCruiseSpeed: this.routeIntFromText(this.routeNinetyDegreeTurnMsText, 686, 200, 4000)
     };
-    return RoutePlanner.buildPlan(this.routePoints, totalMeters, speed, calibration);
+    return RoutePlanner.buildPlan(this.routePoints, totalMeters, this.currentRouteSpeedPercent(), calibration);
+  }
+
+  currentRouteSpeedPercent(): number {
+    return Math.max(30, Math.min(100, Math.round(this.manualSleSpeed)));
   }
 
   updateRoutePlanSummary() {
@@ -4338,7 +4321,6 @@ export struct SsapClientPage {
       imageUri: this.routeImageUri,
       points: this.copyRoutePoints(this.routePoints),
       lengthText: this.routeLengthText,
-      speedText: this.routeWs63SpeedText,
       loopText: this.routeLoopText,
       secondsPerMeterText: this.routeSecondsPerMeterText,
       ninetyDegreeTurnMsText: this.routeNinetyDegreeTurnMsText,
@@ -4371,7 +4353,6 @@ export struct SsapClientPage {
     this.routePoints = this.copyRoutePoints(entry.points);
     this.routeShapeKind = entry.shapeKind === undefined ? this.inferRouteShapeKind(entry.points) : entry.shapeKind;
     this.routeLengthText = entry.lengthText;
-    this.routeWs63SpeedText = entry.speedText;
     this.routeLoopText = entry.loopText;
     this.routeSecondsPerMeterText = entry.secondsPerMeterText;
     this.routeNinetyDegreeTurnMsText = entry.ninetyDegreeTurnMsText;
@@ -4396,7 +4377,7 @@ export struct SsapClientPage {
 
   syncGraphicalRouteDraft(): string {
     let plan = this.currentRoutePlan();
-    let speed = this.routeIntFromText(this.routeWs63SpeedText, 100, 30, 100);
+    let speed = this.currentRouteSpeedPercent();
     let loops = this.routeIntFromText(this.routeLoopText, 1, 0, 20);
     let normalizedSpeed = Number((speed * 0.0024).toFixed(3));
     let origin: RoutePointModel = { x: 0, y: 0 };
@@ -4453,14 +4434,14 @@ export struct SsapClientPage {
       steps: steps
     };
     this.routeJsonDraft = JSON.stringify(route, null, 2);
-    this.routeDetailText = `路线 ${plan.totalMeters.toFixed(1)} 米，${plan.legs.length} 段，速度 ${speed}，` +
+    this.routeDetailText = `路线 ${plan.totalMeters.toFixed(1)} 米，${plan.legs.length} 段，星闪遥控速度 ${speed}% ，` +
       `${loops === 0 ? '连续循环' : `${loops}圈`}，标定 ${this.routeSecondsPerMeterText}s/米、90° ${this.routeNinetyDegreeTurnMsText}ms`;
     return this.routeJsonDraft;
   }
 
   buildWs63RouteCommands(): Array<string> {
     let plan = this.currentRoutePlan();
-    let speed = this.routeIntFromText(this.routeWs63SpeedText, 100, 30, 100);
+    let speed = this.currentRouteSpeedPercent();
     let loops = this.routeIntFromText(this.routeLoopText, 1, 0, 20);
     if (!plan.closed && loops !== 1) {
       loops = 1;
