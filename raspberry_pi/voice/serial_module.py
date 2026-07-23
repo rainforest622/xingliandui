@@ -45,6 +45,8 @@ ASRPRO_REPLY_PATROL_COMPLETE_ALERT = 0xFB
 ASRPRO_REPLY_STATUS_DETAIL = 0xFC
 ASRPRO_REPLY_BATTERY_UNAVAILABLE = 0xFD
 ASRPRO_REPLY_SENSOR_UNAVAILABLE = 0xFE
+ASRPRO_REPLY_PERSON_ALERT = 0xEF
+ASRPRO_REPLY_FIRE_SMOKE_ALERT = 0xEE
 
 # Dynamic telemetry packet sent from the Pi to ASRPRO.  The first byte is a
 # frame marker and the following six bytes are: kind, value_a (big endian),
@@ -62,6 +64,8 @@ ASRPRO_ANNOUNCEMENT_CODES = {
     "patrol_complete_alert": ASRPRO_REPLY_PATROL_COMPLETE_ALERT,
     "status_detail": ASRPRO_REPLY_STATUS_DETAIL,
     "battery_unavailable": ASRPRO_REPLY_BATTERY_UNAVAILABLE,
+    "person_alert": ASRPRO_REPLY_PERSON_ALERT,
+    "fire_smoke_alert": ASRPRO_REPLY_FIRE_SMOKE_ALERT,
 }
 
 

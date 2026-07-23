@@ -48,6 +48,7 @@ VOICE_INTENT_PATROL_REPORT = "patrol_report"
 VOICE_INTENT_BATTERY = "battery_report"
 VOICE_INTENT_CLEAR_ALARM = "alarm_clear_request"
 VOICE_EVENTS_STOP = {"help", "alarm_sound", "impact"}
+VOICE_CAMERA_ANNOUNCEMENTS = {"person_alert", "fire_smoke_alert"}
 VOICE_INTENTS = {
     VOICE_INTENT_START,
     VOICE_INTENT_PAUSE,
@@ -69,6 +70,8 @@ VOICE_ANNOUNCEMENT_COOLDOWNS = {
     "obstacle_avoid": 4.0,
     "temperature_alarm": 12.0,
     "humidity_alarm": 12.0,
+    "person_alert": 8.0,
+    "fire_smoke_alert": 8.0,
 }
 VOICE_ANNOUNCEMENT_MAX_AGE_S = 30.0
 RANGE_SAFETY_WINDOW = 3
@@ -673,6 +676,11 @@ class MapBrain:
         self.paused = False
         self.paused_at = 0.0
         self.speed_scale = 1.0
+        # A route file records the speed used during its physical calibration.
+        # When the phone provides its current manual SLE speed, it becomes the
+        # runtime source of truth while the recorded value remains the timing
+        # baseline for preserving route distance.
+        self.manual_speed_percent: int | None = None
         self.max_loops = 1
         self.step_index = 0
         self.loop_index = 0
@@ -727,12 +735,21 @@ class MapBrain:
         """Return the route's measured open-loop movement calibration."""
 
         with self.lock:
-            speed_scale = max(0.10, self.speed_scale)
+            if self.manual_speed_percent is None:
+                speed_scale = max(0.10, self.speed_scale)
+                return {
+                    "seconds_per_meter": self.seconds_per_meter / speed_scale,
+                    "ninety_degree_turn_s": self.ninety_degree_turn_s,
+                    "linear_speed": self.default_speed * speed_scale,
+                    "turn_speed": self.default_turn_speed,
+                }
+            legacy_speed = max(0.01, self.default_speed * self.speed_scale)
+            linear_speed = self._effective_step_speed_unlocked(self.default_speed)
             return {
-                "seconds_per_meter": self.seconds_per_meter / speed_scale,
+                "seconds_per_meter": self.seconds_per_meter * legacy_speed / max(0.01, linear_speed),
                 "ninety_degree_turn_s": self.ninety_degree_turn_s,
-                "linear_speed": self.default_speed * speed_scale,
-                "turn_speed": self.default_turn_speed,
+                "linear_speed": linear_speed,
+                "turn_speed": self._effective_step_speed_unlocked(self.default_turn_speed),
             }
 
     def _load_unlocked(self) -> None:
@@ -783,6 +800,10 @@ class MapBrain:
                 self.map_path = requested if requested.is_absolute() else self.map_path.parent / requested
             self._load_unlocked()
             self.speed_scale = max(0.0, min(2.0, safe_float(query.get("speed_scale", ["1.0"])[0], 1.0)))
+            self.manual_speed_percent = None
+            if "manual_speed_percent" in query:
+                requested_percent = safe_float(query["manual_speed_percent"][0], 100.0)
+                self.manual_speed_percent = max(30, min(100, int(round(requested_percent))))
             self.max_loops = self.default_loops
             if "loops" in query:
                 self.max_loops = max(0, int(safe_float(query["loops"][0], self.default_loops)))
@@ -877,6 +898,8 @@ class MapBrain:
             "paused": self.paused,
             "paused_for_s": round(max(0.0, now - self.paused_at), 3) if self.paused else 0.0,
             "speed_scale": self.speed_scale,
+            "manual_speed_percent": self.manual_speed_percent,
+            "effective_drive_speed": round(self._effective_step_speed_unlocked(self.default_speed), 3),
             "calibration": {
                 "seconds_per_meter": self.seconds_per_meter,
                 "ninety_degree_turn_s": self.ninety_degree_turn_s,
@@ -900,7 +923,26 @@ class MapBrain:
         if not self.steps:
             return 0.1
         step = self.steps[self.step_index]
-        return max(0.05, safe_float(step.get("duration_s", step.get("duration", 0.5)), 0.5))
+        duration = max(0.05, safe_float(step.get("duration_s", step.get("duration", 0.5)), 0.5))
+        action = str(step.get("action", step.get("type", "move"))).lower()
+        if self.manual_speed_percent is None or action in ("wait", "inspect", "stop", "pause"):
+            return duration
+        legacy_speed = self._legacy_step_speed_unlocked(step, action)
+        effective_speed = self._effective_step_speed_unlocked(legacy_speed)
+        return max(0.05, duration * legacy_speed * self.speed_scale / max(0.01, effective_speed))
+
+    def _legacy_step_speed_unlocked(self, step: dict[str, Any], action: str) -> float:
+        if action in ("turn", "rotate"):
+            return max(0.01, abs(safe_float(step.get("speed"), self.default_turn_speed)))
+        speed = safe_float(step.get("speed"), self.default_speed)
+        left = safe_float(step.get("left"), speed)
+        right = safe_float(step.get("right"), speed)
+        return max(0.01, abs(left), abs(right))
+
+    def _effective_step_speed_unlocked(self, fallback_speed: float) -> float:
+        if self.manual_speed_percent is None:
+            return clamp_speed(fallback_speed * self.speed_scale)
+        return clamp_speed(0.5 * self.manual_speed_percent / 100.0 * self.speed_scale)
 
     def _payload_for_step_unlocked(self, step: dict[str, Any]) -> dict[str, Any]:
         action = str(step.get("action", step.get("type", "move"))).lower()
@@ -908,7 +950,9 @@ class MapBrain:
             return dict(STOP_PAYLOAD)
 
         if action in ("turn", "rotate"):
-            speed = abs(safe_float(step.get("speed"), self.default_turn_speed)) * self.speed_scale
+            speed = self._effective_step_speed_unlocked(
+                abs(safe_float(step.get("speed"), self.default_turn_speed))
+            )
             direction = str(step.get("direction", "right")).lower()
             if direction in ("left", "ccw", "counterclockwise"):
                 left = -speed
@@ -919,8 +963,16 @@ class MapBrain:
             return {"T": 1, "L": round(clamp_speed(left), 3), "R": round(clamp_speed(right), 3)}
 
         speed = safe_float(step.get("speed"), self.default_speed)
-        left = safe_float(step.get("left"), speed) * self.speed_scale
-        right = safe_float(step.get("right"), speed) * self.speed_scale
+        if self.manual_speed_percent is None:
+            left = safe_float(step.get("left"), speed) * self.speed_scale
+            right = safe_float(step.get("right"), speed) * self.speed_scale
+        else:
+            legacy_left = safe_float(step.get("left"), speed)
+            legacy_right = safe_float(step.get("right"), speed)
+            legacy_peak = max(0.01, abs(legacy_left), abs(legacy_right))
+            target_speed = self._effective_step_speed_unlocked(legacy_peak)
+            left = legacy_left * target_speed / legacy_peak
+            right = legacy_right * target_speed / legacy_peak
         return {"T": 1, "L": round(clamp_speed(left), 3), "R": round(clamp_speed(right), 3)}
 
     def _reason_for_step_unlocked(self, step: dict[str, Any], now: float) -> str:
@@ -1978,6 +2030,18 @@ def make_http_handler(
             if parsed.path == "/voice/intent":
                 status, payload = apply_voice_intent(state, map_brain, body)
                 self.send_json(status, payload)
+                return
+            if parsed.path == "/voice/announcement":
+                kind = str(body.get("kind", "")).strip()
+                message = str(body.get("message", "")).strip()
+                telemetry = body.get("telemetry")
+                if kind not in VOICE_CAMERA_ANNOUNCEMENTS:
+                    self.send_json(400, {"ok": False, "error": "unsupported announcement kind"})
+                    return
+                if not isinstance(telemetry, dict):
+                    telemetry = {}
+                queued = state.queue_voice_announcement(kind, message or kind, telemetry=telemetry)
+                self.send_json(200, {"ok": True, "queued": queued, "kind": kind})
                 return
             if parsed.path == "/voice/emergency/ack":
                 self.send_json(

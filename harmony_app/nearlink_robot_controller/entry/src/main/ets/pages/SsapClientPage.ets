@@ -146,6 +146,25 @@ interface PiCameraStatusPayload {
   bandwidth_kbps?: number;
   cpu_percent?: number;
   cpu_temp_c?: number;
+  ai?: PiCameraAiConfigPayload;
+  person_detection_enabled?: boolean;
+  fire_smoke_detection_enabled?: boolean;
+  person_detected?: boolean;
+  fire_detected?: boolean;
+  smoke_detected?: boolean;
+  fire_smoke_detected?: boolean;
+}
+
+interface PiCameraAiConfigPayload {
+  person_detection?: boolean;
+  fire_smoke_detection?: boolean;
+  fire_smoke_interval_ms?: number;
+}
+
+interface PiCameraAiConfigResponse {
+  ok?: boolean;
+  ai?: PiCameraAiConfigPayload;
+  error?: string;
 }
 
 interface CameraAddress {
@@ -387,6 +406,12 @@ export struct SsapClientPage {
   @State cameraCheckDone: boolean = false;
   @State cameraOnline: boolean = false;
   @State cameraFrameReady: boolean = false;
+  @State cameraPersonDetectionEnabled: boolean = false;
+  @State cameraFireSmokeDetectionEnabled: boolean = false;
+  @State cameraAiBusy: boolean = false;
+  @State cameraAiStatusText: string = 'AI 检测：人形关，烟火关';
+  @State cameraVisionAlarmActive: boolean = false;
+  @State cameraVisionAlarmText: string = '视觉告警未触发';
   @State inspectionEnabled: boolean = false;
   @State inspectionStatusText: string = '等待启动巡检';
   @State inspectionDistanceText: string = '--';
@@ -431,6 +456,7 @@ export struct SsapClientPage {
   lastPhoneVoiceEmergencySequence: number = 0;
   cameraProbeBusy: boolean = false;
   cameraFailureCount: number = 0;
+  lastCameraVisionAlertSignature: string = '';
   safetyStopCallback: (reason: string) => void = (reason: string) => {
     this.safeStop(reason, false);
   };
@@ -690,6 +716,37 @@ export struct SsapClientPage {
       }
       .width('100%')
       .margin({ top: 10 })
+
+      Row({ space: 8 }) {
+        Button(`人形检测 ${this.cameraPersonDetectionEnabled ? '开' : '关'}`)
+          .height(34)
+          .fontSize(12)
+          .layoutWeight(1)
+          .backgroundColor(this.cameraPersonDetectionEnabled ? '#ff0f766e' : '#ff64748b')
+          .enabled(!this.cameraAiBusy && this.cameraOnline)
+          .onClick(() => {
+            this.setCameraAiConfig(!this.cameraPersonDetectionEnabled, this.cameraFireSmokeDetectionEnabled);
+          })
+        Button(`烟火检测 ${this.cameraFireSmokeDetectionEnabled ? '开' : '关'}`)
+          .height(34)
+          .fontSize(12)
+          .layoutWeight(1)
+          .backgroundColor(this.cameraFireSmokeDetectionEnabled ? '#ffb45309' : '#ff64748b')
+          .enabled(!this.cameraAiBusy && this.cameraOnline)
+          .onClick(() => {
+            this.setCameraAiConfig(this.cameraPersonDetectionEnabled, !this.cameraFireSmokeDetectionEnabled);
+          })
+      }
+      .width('100%')
+      .margin({ top: 8 })
+
+      Text(`${this.cameraAiStatusText}；${this.cameraVisionAlarmText}`)
+        .fontSize(11)
+        .fontColor(this.cameraVisionAlarmActive ? '#ff991b1b' : '#ff475569')
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .width('100%')
+        .margin({ top: 6 })
 
       Row({ space: 8 }) {
         TextInput({ text: this.cameraBaseDraft, placeholder: 'http://192.168.43.42:8080' })
@@ -4489,15 +4546,15 @@ export struct SsapClientPage {
     if (this.routeControlBusy) {
       return;
     }
-    this.routeStatusText = '正在导入路线并启动 WS63 巡检';
-    this.sendWs63RouteConfig(true);
+    // MapBrain is the single patrol executor.  Starting through the legacy P
+    // command would bypass the current manual SLE speed selected in the app.
+    this.routeStatusText = '正在同步路线并启动巡检';
+    this.importRouteToPi(true);
   }
 
   stopWs63RoutePatrol() {
     this.cancelRouteUpload();
-    this.inspectionEnabled = false;
-    this.routeStatusText = '已停止路线巡检';
-    this.writeCommand('S');
+    this.stopImportedRoute();
   }
 
   applyRouteBaseUrl() {
@@ -4632,7 +4689,12 @@ export struct SsapClientPage {
     }
     this.routeControlBusy = true;
     let loops = this.routeIntFromText(this.routeLoopText, 1, 0, 20);
-    let startRequest = JSON.stringify({ loops: loops, speed_scale: 1.0 });
+    let manualSpeed = Math.max(30, Math.min(100, Math.round(this.manualSleSpeed)));
+    let startRequest = JSON.stringify({
+      loops: loops,
+      speed_scale: 1.0,
+      manual_speed_percent: manualSpeed
+    });
     this.postRouteRequest('/route/start', startRequest, '启动路线', (payload: RouteServicePayload) => {
       this.updateRouteStatusFromPayload(payload);
       this.routeStatusText = '路线巡航已启动';
@@ -4835,6 +4897,19 @@ export struct SsapClientPage {
     let bandwidth = this.formatOptionalNumber(payload.bandwidth_kbps, 0);
     let cpu = this.formatOptionalNumber(payload.cpu_percent, 0);
     let temp = this.formatOptionalNumber(payload.cpu_temp_c, 1);
+    if (payload.ai !== undefined) {
+      this.cameraPersonDetectionEnabled = payload.ai.person_detection === true;
+      this.cameraFireSmokeDetectionEnabled = payload.ai.fire_smoke_detection === true;
+    } else {
+      if (payload.person_detection_enabled !== undefined) {
+        this.cameraPersonDetectionEnabled = payload.person_detection_enabled === true;
+      }
+      if (payload.fire_smoke_detection_enabled !== undefined) {
+        this.cameraFireSmokeDetectionEnabled = payload.fire_smoke_detection_enabled === true;
+      }
+    }
+    this.cameraAiStatusText = `AI 检测：人形${this.cameraPersonDetectionEnabled ? '开' : '关'}，烟火${this.cameraFireSmokeDetectionEnabled ? '开' : '关'}`;
+    this.updateCameraVisionAlarm(payload);
 
     if (payload.camera_error !== undefined && payload.camera_error.length > 0) {
       this.cameraStatus = `摄像头错误：${payload.camera_error}`;
@@ -4845,7 +4920,78 @@ export struct SsapClientPage {
 
     this.cameraHealthText = this.cameraFrameReady ? '画面在线' : '等待画面';
     this.cameraStatus = this.cameraFrameReady ? `摄像头在线：${backend}` : `服务在线，但还没有新画面：${backend}`;
-    this.cameraDetailText = `FPS ${fps}，帧 ${frames}，帧龄 ${frameAge}s，带宽 ${bandwidth}kbps，CPU ${cpu}%，温度 ${temp}C`;
+    this.cameraDetailText = `FPS ${fps}，帧 ${frames}，帧龄 ${frameAge}s，带宽 ${bandwidth}kbps，CPU ${cpu}%，温度 ${temp}C，${this.cameraAiStatusText}`;
+  }
+
+  updateCameraVisionAlarm(payload: PiCameraStatusPayload) {
+    let alerts: Array<string> = [];
+    if (payload.person_detected === true) {
+      alerts.push('人员靠近');
+    }
+    if (payload.fire_detected === true) {
+      alerts.push('火焰异常');
+    }
+    if (payload.smoke_detected === true) {
+      alerts.push('烟雾异常');
+    }
+    this.cameraVisionAlarmActive = alerts.length > 0;
+    this.cameraVisionAlarmText = alerts.length > 0 ? `视觉告警：${alerts.join(' / ')}` : '视觉告警未触发';
+    let signature = alerts.join('|');
+    if (signature.length > 0 && signature !== this.lastCameraVisionAlertSignature) {
+      this.showInspectionToast(this.cameraVisionAlarmText, 4200);
+    }
+    this.lastCameraVisionAlertSignature = signature;
+  }
+
+  setCameraAiConfig(personEnabled: boolean, fireSmokeEnabled: boolean) {
+    if (this.cameraAiBusy) {
+      return;
+    }
+    this.cameraAiBusy = true;
+    let request = http.createHttp();
+    let body = JSON.stringify({
+      person_detection: personEnabled,
+      fire_smoke_detection: fireSmokeEnabled
+    });
+    request.request(`${this.cameraBaseUrl}/ai/config`, {
+      method: http.RequestMethod.POST,
+      header: {
+        'Content-Type': 'application/json'
+      },
+      extraData: body,
+      connectTimeout: 2500,
+      readTimeout: 2500,
+      expectDataType: http.HttpDataType.STRING
+    }, (err: BusinessError, data: http.HttpResponse) => {
+      this.cameraAiBusy = false;
+      try {
+        request.destroy();
+      } catch (destroyErr) {
+        hilog.warn(this.domainId, this.logTag, `camera ai request destroy ignored: ${(destroyErr as BusinessError).code}`);
+      }
+
+      if (err !== undefined && err !== null) {
+        this.showInspectionToast(`AI 开关失败：${err.code}, ${err.message}`, 2200);
+        return;
+      }
+      if (data.responseCode < 200 || data.responseCode >= 300) {
+        this.showInspectionToast(`AI 开关失败：HTTP ${data.responseCode}`, 2200);
+        return;
+      }
+      let resultText = typeof data.result === 'string' ? data.result : JSON.stringify(data.result);
+      try {
+        let payload = JSON.parse(resultText) as PiCameraAiConfigResponse;
+        if (payload.ai !== undefined) {
+          this.cameraPersonDetectionEnabled = payload.ai.person_detection === true;
+          this.cameraFireSmokeDetectionEnabled = payload.ai.fire_smoke_detection === true;
+          this.cameraAiStatusText = `AI 检测：人形${this.cameraPersonDetectionEnabled ? '开' : '关'}，烟火${this.cameraFireSmokeDetectionEnabled ? '开' : '关'}`;
+        }
+        this.showInspectionToast('AI 检测开关已同步', 1400);
+        this.checkCameraStatus(true);
+      } catch (parseErr) {
+        this.showInspectionToast(`AI 状态解析失败：${(parseErr as Error).message}`, 2200);
+      }
+    });
   }
 
   handleCameraStatusFailure(message: string) {

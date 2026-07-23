@@ -32,12 +32,22 @@ class AlarmManager:
         with self._lock:
             return self._active
 
-    def feed(self, person_detected: bool, frame: np.ndarray | None = None,
-             person_count: int = 0) -> bool:
+    def clear(self) -> None:
+        with self._lock:
+            self._active = False
+
+    def feed(
+        self,
+        alarm_active: bool,
+        frame: np.ndarray | None = None,
+        person_count: int = 0,
+        kind: str = "person",
+        detail: str = "",
+    ) -> bool:
         now = time.monotonic()
         with self._lock:
-            self._active = person_detected
-            if not person_detected:
+            self._active = alarm_active
+            if not alarm_active:
                 return False
             if now - self._last_triggered < self.cooldown_sec:
                 return False
@@ -52,8 +62,11 @@ class AlarmManager:
             entry = {
                 "time": ts,
                 "filename": filename,
-                "person_count": max(1, person_count),
+                "kind": kind,
+                "detail": detail,
             }
+            if person_count > 0:
+                entry["person_count"] = person_count
             with self._lock:
                 self._history.append(entry)
                 if len(self._history) > self.max_history:

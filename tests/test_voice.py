@@ -45,6 +45,8 @@ from voice.serial_module import (
     ASRPRO_DYNAMIC_FRAME,
     ASRPRO_REPLY_BATTERY_UNAVAILABLE,
     ASRPRO_REPLY_CRITICAL,
+    ASRPRO_REPLY_FIRE_SMOKE_ALERT,
+    ASRPRO_REPLY_PERSON_ALERT,
     ASRPRO_REPLY_STARTED,
     ASRPRO_REPLY_STATUS_DETAIL,
     ASRPRO_REPLY_TEMP_ALARM,
@@ -374,6 +376,8 @@ class VoiceIntentTests(unittest.TestCase):
             asrpro_announcement_code({"kind": "battery_unavailable"}),
             ASRPRO_REPLY_BATTERY_UNAVAILABLE,
         )
+        self.assertEqual(asrpro_announcement_code({"kind": "person_alert"}), ASRPRO_REPLY_PERSON_ALERT)
+        self.assertEqual(asrpro_announcement_code({"kind": "fire_smoke_alert"}), ASRPRO_REPLY_FIRE_SMOKE_ALERT)
 
     def test_asrpro_live_telemetry_frames_preserve_deci_values(self) -> None:
         environment = asrpro_announcement_frames(
@@ -502,6 +506,36 @@ class VoiceIntentTests(unittest.TestCase):
             self.assertAlmostEqual(calibration["linear_speed"], 0.12)
             self.assertAlmostEqual(calibration["seconds_per_meter"], 5.6)
 
+    def test_phone_manual_speed_overrides_route_motion_and_preserves_distance(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            route_path = Path(temp_dir) / "route.json"
+            route_path.write_text(
+                json.dumps(
+                    {
+                        "default_speed": 0.24,
+                        "default_turn_speed": 0.5,
+                        "steps": [
+                            {"id": "move", "action": "move", "duration_s": 1.0},
+                            {"id": "turn", "action": "turn", "duration_s": 1.0},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            map_brain = MapBrain(str(route_path))
+            map_brain.configure_and_start({"manual_speed_percent": ["60"]})
+
+            payload, _ = map_brain.next_payload()
+            self.assertEqual(payload, {"T": 1, "L": 0.3, "R": 0.3})
+            self.assertAlmostEqual(map_brain.snapshot()["step_remaining_s"], 0.8, places=1)
+            self.assertEqual(map_brain.snapshot()["manual_speed_percent"], 60)
+
+            with map_brain.lock:
+                map_brain.step_index = 1
+                map_brain.step_until = time.monotonic() + map_brain._current_duration_unlocked()
+            payload, _ = map_brain.next_payload()
+            self.assertEqual(payload, {"T": 1, "L": 0.3, "R": -0.3})
+
     def test_completed_map_patrol_returns_arbiter_to_manual(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             route_path = Path(temp_dir) / "route.json"
@@ -619,6 +653,39 @@ class VoiceIntentTests(unittest.TestCase):
                 server.shutdown()
                 thread.join(timeout=2)
                 server.server_close()
+
+    def test_camera_voice_announcement_does_not_change_drive_mode(self) -> None:
+        state = ArbiterState(arbiter_args())
+        state.set_mode(MODE_AUTO_MAP, "test")
+        server = ThreadingHTTPServer(("127.0.0.1", 0), make_http_handler(state))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            payload = json.dumps(
+                {
+                    "kind": "fire_smoke_alert",
+                    "message": "visual fire or smoke abnormality detected",
+                    "telemetry": {"fire_detected": True, "smoke_detected": False},
+                }
+            ).encode("utf-8")
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{server.server_port}/voice/announcement",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=2) as response:
+                reply = json.loads(response.read().decode("utf-8"))
+
+            self.assertTrue(reply["ok"])
+            self.assertEqual(state.snapshot()["mode"], MODE_AUTO_MAP)
+            announcement = state.pop_voice_announcements()[0]
+            self.assertEqual(announcement["kind"], "fire_smoke_alert")
+            self.assertTrue(announcement["telemetry"]["fire_detected"])
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+            server.server_close()
 
 
 if __name__ == "__main__":

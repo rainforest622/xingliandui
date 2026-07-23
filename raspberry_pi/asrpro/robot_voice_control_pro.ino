@@ -36,6 +36,8 @@ static const uint8_t REPLY_PATROL_COMPLETE_ALERT = 0xFB;
 static const uint8_t REPLY_STATUS_DETAIL = 0xFC;
 static const uint8_t REPLY_BATTERY_UNAVAILABLE = 0xFD;
 static const uint8_t REPLY_SENSOR_UNAVAILABLE = 0xFE;
+static const uint8_t REPLY_PERSON_ALERT = 0xEF;
+static const uint8_t REPLY_FIRE_SMOKE_ALERT = 0xEE;
 static const uint8_t DYNAMIC_FRAME = 0xE0;
 static const uint8_t DYNAMIC_ENVIRONMENT = 0x01;
 static const uint8_t DYNAMIC_DISTANCE = 0x02;
@@ -280,6 +282,8 @@ static void handle_reply_byte(uint8_t value)
         case REPLY_STATUS_DETAIL: play_audio(11022); break;
         case REPLY_BATTERY_UNAVAILABLE: play_audio(11025); break;
         case REPLY_SENSOR_UNAVAILABLE: play_audio(PROMPT_SENSOR_UNAVAILABLE); break;
+        case REPLY_PERSON_ALERT: play_audio(11048); break;
+        case REPLY_FIRE_SMOKE_ALERT: play_audio(11049); break;
         default: break;
     }
 }
@@ -332,6 +336,8 @@ void setup()
     //{playid:11045,voice:十。}
     //{playid:11046,voice:百。}
     //{playid:11047,voice:千。}
+    //{playid:11048,voice:检测到人员靠近巡检区域，请注意避让。}
+    //{playid:11049,voice:检测到火焰或烟雾异常，巡检继续，请及时处理。}
 
     // Tianwen Block's "播报音设置(百度TTS)" generator emits this exact form.
     //{speak:小鹿-甜美女声,vol:16,speed:8,platform:baidu}

@@ -3,15 +3,19 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import threading
 import time
 from http import server
 from pathlib import Path
+import urllib.error
+import urllib.request
 from urllib.parse import unquote
 
 import cv2
 
 from alarm.manager import AlarmManager
 from camera.capture import CameraCapture
+from detection.fire_smoke_detector import FireSmokeDetector
 from detection.person_detector import PersonDetector
 from metrics.collector import MetricsCollector
 
@@ -56,6 +60,7 @@ _HTML = """<!DOCTYPE html>
   <div class="card"><div class="label">BW kbps</div><div class="val" id="bw">--</div></div>
   <div class="card"><div class="label">Drop</div><div class="val" id="drop">--</div></div>
   <div class="card" id="det-card"><div class="label">Detection</div><div class="val" id="det">--</div></div>
+  <div class="card" id="fire-card"><div class="label">Fire/Smoke</div><div class="val" id="fire">--</div></div>
   <div class="card" id="alarm-card"><div class="label">Alarm</div><div class="val" id="alarm">--</div></div>
 </div>
 <div id="camera-error"></div>
@@ -76,8 +81,11 @@ _HTML = """<!DOCTYPE html>
     temp.parentElement.className = s.cpu_temp_c > 75 ? 'card warn' : 'card';
     document.getElementById('bw').textContent = Number(s.bandwidth_kbps || 0).toFixed(0);
     document.getElementById('drop').textContent = (Number(s.drop_rate || 0) * 100).toFixed(1) + '%';
-    document.getElementById('det').textContent = s.person_detected ? 'PERSON' : 'CLEAR';
+    document.getElementById('det').textContent = s.person_detection_enabled ? (s.person_detected ? 'PERSON' : 'CLEAR') : 'OFF';
     document.getElementById('det').style.color = s.person_detected ? '#ff6b6b' : '#7fd08a';
+    const fire = document.getElementById('fire');
+    fire.textContent = s.fire_smoke_detection_enabled ? (s.fire_detected ? 'FIRE' : (s.smoke_detected ? 'SMOKE' : 'CLEAR')) : 'OFF';
+    fire.style.color = s.fire_smoke_detected ? '#ff6b6b' : '#7fd08a';
     const alarmCard = document.getElementById('alarm-card');
     alarmCard.className = s.alarm_active ? 'card bad' : 'card';
     document.getElementById('alarm').textContent = s.alarm_active ? 'ON' : 'OFF';
@@ -160,6 +168,79 @@ _DRIVER_HTML = """<!DOCTYPE html>
 </html>"""
 
 
+class AiRuntimeConfig:
+    def __init__(
+        self,
+        person_detection: bool = False,
+        fire_smoke_detection: bool = False,
+        fire_smoke_interval_ms: int = 1000,
+    ):
+        self._lock = threading.Lock()
+        self.person_detection = person_detection
+        self.fire_smoke_detection = fire_smoke_detection
+        self.fire_smoke_interval_ms = fire_smoke_interval_ms
+
+    def snapshot(self) -> dict[str, object]:
+        with self._lock:
+            return {
+                "person_detection": self.person_detection,
+                "fire_smoke_detection": self.fire_smoke_detection,
+                "fire_smoke_interval_ms": self.fire_smoke_interval_ms,
+            }
+
+    def update(self, payload: dict[str, object]) -> dict[str, object]:
+        with self._lock:
+            if "person_detection" in payload:
+                self.person_detection = bool(payload["person_detection"])
+            if "fire_smoke_detection" in payload:
+                self.fire_smoke_detection = bool(payload["fire_smoke_detection"])
+            if "fire_smoke_interval_ms" in payload:
+                try:
+                    interval_ms = int(payload["fire_smoke_interval_ms"])
+                except (TypeError, ValueError):
+                    interval_ms = self.fire_smoke_interval_ms
+                self.fire_smoke_interval_ms = max(500, min(5000, interval_ms))
+            return {
+                "person_detection": self.person_detection,
+                "fire_smoke_detection": self.fire_smoke_detection,
+                "fire_smoke_interval_ms": self.fire_smoke_interval_ms,
+            }
+
+
+class VoiceAnnouncementClient:
+    def __init__(self, arbiter_url: str, cooldown_sec: float = 8.0, timeout_sec: float = 0.35):
+        self.arbiter_url = arbiter_url.rstrip("/")
+        self.cooldown_sec = cooldown_sec
+        self.timeout_sec = timeout_sec
+        self._last_sent: dict[str, float] = {}
+
+    def notify(self, kind: str, message: str, telemetry: dict[str, object] | None = None) -> None:
+        if not self.arbiter_url:
+            return
+        now = time.monotonic()
+        if now - self._last_sent.get(kind, 0.0) < self.cooldown_sec:
+            return
+        self._last_sent[kind] = now
+        payload = {
+            "kind": kind,
+            "message": message,
+            "source": "pi-camera",
+            "telemetry": telemetry or {},
+        }
+        body = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self.arbiter_url}/voice/announcement",
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout_sec):
+                pass
+        except (urllib.error.URLError, TimeoutError, OSError):
+            return
+
+
 class RequestHandler(server.BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         path = self.path.split("?")[0]
@@ -172,6 +253,8 @@ class RequestHandler(server.BaseHTTPRequestHandler):
             self._serve_stream()
         elif path == "/status":
             self._serve_status()
+        elif path == "/ai/config":
+            self._serve_ai_config()
         elif path == "/healthz":
             self._serve_healthz()
         elif path == "/alarms":
@@ -180,6 +263,46 @@ class RequestHandler(server.BaseHTTPRequestHandler):
             self._serve_snapshot(path)
         else:
             self.send_error(404)
+
+    def do_POST(self) -> None:
+        path = self.path.split("?")[0]
+        if path != "/ai/config":
+            self.send_error(404)
+            return
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        raw = self.rfile.read(length) if length > 0 else b"{}"
+        try:
+            payload = json.loads(raw.decode("utf-8")) if raw else {}
+        except json.JSONDecodeError:
+            self._send_json(400, {"ok": False, "error": "invalid json"})
+            return
+        if not isinstance(payload, dict):
+            self._send_json(400, {"ok": False, "error": "body must be an object"})
+            return
+        config = self.server.ai_config.update(payload)
+        if config["person_detection"]:
+            start = getattr(self.server.detector, "start", None)
+            if callable(start):
+                start()
+        else:
+            self.server.detector.clear()
+        if config["fire_smoke_detection"]:
+            start = getattr(self.server.fire_smoke, "start", None)
+            if callable(start):
+                start()
+        else:
+            self.server.fire_smoke.reset()
+        self.server.alarm.clear()
+        self.server.fire_smoke.cooldown_sec = float(config["fire_smoke_interval_ms"]) / 1000.0
+        self._send_json(200, {"ok": True, "ai": config})
+
+    def _send_json(self, status_code: int, payload: object) -> None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _serve_html(self) -> None:
         body = _HTML.encode()
@@ -210,12 +333,50 @@ class RequestHandler(server.BaseHTTPRequestHandler):
                 continue
             self.server.metrics.tick_captured()
 
-            self.server.detector.feed(frame)
-            person_present = self.server.detector.last_present
-            person_count = len(self.server.detector.last_boxes)
-            self.server.alarm.feed(person_present, frame, person_count)
+            ai_config = self.server.ai_config.snapshot()
+            person_enabled = bool(ai_config["person_detection"])
+            fire_smoke_enabled = bool(ai_config["fire_smoke_detection"])
 
-            annotated = self.server.detector.annotate(frame.copy())
+            if person_enabled:
+                self.server.detector.feed(frame)
+            else:
+                self.server.detector.clear()
+            person_present = person_enabled and self.server.detector.last_present
+            person_count = len(self.server.detector.last_boxes) if person_enabled else 0
+
+            if fire_smoke_enabled:
+                self.server.fire_smoke.cooldown_sec = float(ai_config["fire_smoke_interval_ms"]) / 1000.0
+                fire_smoke_result = self.server.fire_smoke.feed(frame)
+            else:
+                self.server.fire_smoke.reset()
+                fire_smoke_result = self.server.fire_smoke.last_result
+
+            if person_present:
+                self.server.voice.notify("person_alert", "person detected near the patrol route")
+            if fire_smoke_result.active:
+                self.server.voice.notify(
+                    "fire_smoke_alert",
+                    "visual fire or smoke abnormality detected; patrol continues",
+                    fire_smoke_result.snapshot(),
+                )
+
+            alarm_active = bool(person_present or fire_smoke_result.active)
+            alarm_kind = "person" if person_present else "fire_smoke"
+            if person_present and fire_smoke_result.active:
+                alarm_kind = "person_fire_smoke"
+            self.server.alarm.feed(
+                alarm_active,
+                frame,
+                person_count,
+                kind=alarm_kind,
+                detail="visual alert; patrol is not stopped by camera service",
+            )
+
+            annotated = frame.copy()
+            if person_enabled:
+                annotated = self.server.detector.annotate(annotated)
+            if fire_smoke_enabled:
+                annotated = self.server.fire_smoke.annotate(annotated)
             ok, encoded = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 75])
             if not ok:
                 continue
@@ -231,9 +392,18 @@ class RequestHandler(server.BaseHTTPRequestHandler):
 
     def _serve_status(self) -> None:
         metrics = self.server.metrics.snapshot()
+        ai_config = self.server.ai_config.snapshot()
+        fire_smoke = self.server.fire_smoke.last_result.snapshot()
+        person_detected = bool(ai_config["person_detection"] and self.server.detector.last_present)
         status = {
             **self.server.capture.status(),
-            "person_detected": self.server.detector.last_present,
+            "ai": ai_config,
+            "person_detection_enabled": ai_config["person_detection"],
+            "fire_smoke_detection_enabled": ai_config["fire_smoke_detection"],
+            "fire_smoke_model_loaded": bool(getattr(self.server.fire_smoke, "model_loaded", False)),
+            "fire_smoke_model_error": str(getattr(self.server.fire_smoke, "model_error", "")),
+            "person_detected": person_detected,
+            **fire_smoke,
             "alarm_active": self.server.alarm.active,
             **metrics,
         }
@@ -284,6 +454,9 @@ class RequestHandler(server.BaseHTTPRequestHandler):
         with open(file_path, "rb") as f:
             self.wfile.write(f.read())
 
+    def _serve_ai_config(self) -> None:
+        self._send_json(200, {"ok": True, "ai": self.server.ai_config.snapshot()})
+
     def log_message(self, *_: object) -> None:
         return
 
@@ -323,7 +496,12 @@ def main() -> None:
     parser.add_argument("--camera-timeout", type=float, default=8.0)
     parser.add_argument("--detect-cooldown", type=float, default=0.5)
     parser.add_argument("--motion-threshold", type=float, default=0.01)
-    parser.add_argument("--no-detect", action="store_true", help="Disable person detection entirely")
+    parser.add_argument("--person-detect", action="store_true", help="Enable person detection at startup")
+    parser.add_argument("--no-detect", action="store_true", help="Legacy alias that keeps person detection disabled")
+    parser.add_argument("--fire-smoke-detect", action="store_true", help="Enable lightweight fire/smoke detection at startup")
+    parser.add_argument("--fire-smoke-interval-ms", type=int, default=1000)
+    parser.add_argument("--voice-arbiter-url", default="http://127.0.0.1:8090")
+    parser.add_argument("--voice-alert-cooldown", type=float, default=8.0)
     parser.add_argument("--alarm-cooldown", type=float, default=5.0)
     parser.add_argument("--snapshot-dir", default="snapshots")
     args = parser.parse_args()
@@ -343,13 +521,25 @@ def main() -> None:
     )
     metrics = MetricsCollector()
     alarm = AlarmManager(snapshot_dir=args.snapshot_dir, cooldown_sec=args.alarm_cooldown)
+    fire_smoke = FireSmokeDetector(cooldown_sec=max(0.5, args.fire_smoke_interval_ms / 1000.0))
+    ai_config = AiRuntimeConfig(
+        person_detection=args.person_detect and not args.no_detect,
+        fire_smoke_detection=args.fire_smoke_detect,
+        fire_smoke_interval_ms=args.fire_smoke_interval_ms,
+    )
+    voice = VoiceAnnouncementClient(args.voice_arbiter_url, cooldown_sec=args.voice_alert_cooldown)
 
-    if not args.no_detect:
+    if ai_config.snapshot()["person_detection"]:
         detector.start()
+    if ai_config.snapshot()["fire_smoke_detection"]:
+        fire_smoke.start()
 
     srv = AppServer((args.host, args.port), RequestHandler)
     srv.capture = capture
     srv.detector = detector
+    srv.fire_smoke = fire_smoke
+    srv.ai_config = ai_config
+    srv.voice = voice
     srv.metrics = metrics
     srv.alarm = alarm
     srv.snapshot_dir = Path(args.snapshot_dir).resolve()
@@ -364,7 +554,8 @@ def main() -> None:
     print(f"Snapshots:     {srv.snapshot_dir}")
     print(f"FPS target:    {args.fps}")
     print(f"Camera:        requested={capture.backend}, active={capture.active_backend}")
-    print(f"Detection:     {'off' if args.no_detect else ('SSD ready' if detector.model_loaded else 'NO MODEL')}")
+    print(f"Detection:     {'SSD ready' if detector.model_loaded else 'off'}")
+    print(f"AI config:     {json.dumps(ai_config.snapshot(), ensure_ascii=False)}")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

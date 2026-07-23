@@ -36,6 +36,12 @@ Environment=FPS=15
 Environment=BACKEND=auto
 Environment=CAMERA=0
 Environment=DETECT_COOLDOWN=1.0
+Environment=PERSON_DETECT=0
+Environment=NO_DETECT=0
+Environment=FIRE_SMOKE_DETECT=0
+Environment=FIRE_SMOKE_INTERVAL_MS=1000
+Environment=VOICE_ARBITER_URL=http://127.0.0.1:8090
+Environment=VOICE_ALERT_COOLDOWN=8.0
 ExecStart=${APP_DIR}/start_pi_camera.sh
 Restart=always
 RestartSec=3

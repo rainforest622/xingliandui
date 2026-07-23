@@ -77,14 +77,36 @@ Useful endpoints:
 /driver        full-frame driver camera view for the Harmony app
 /stream.mjpg   MJPEG camera stream
 /status        camera, detection, and system metrics
+/ai/config     runtime AI switches for person and fire/smoke detection
 /healthz       200 when a camera frame is ready, 503 otherwise
-/alarms        recent person-detection alarms
+/alarms        recent visual-detection alarms and snapshots
 ```
+
+Runtime AI switches:
+
+```bash
+curl http://127.0.0.1:8080/ai/config
+curl -X POST http://127.0.0.1:8080/ai/config \
+  -H "Content-Type: application/json" \
+  -d '{"person_detection":true,"fire_smoke_detection":false}'
+```
+
+Both detectors start disabled. This keeps the Raspberry Pi dedicated to video
+streaming until an operator enables a detector from the Harmony app or the API.
+Fire/smoke detection uses the bundled two-class YOLOv5 ONNX model, draws
+confidence-labelled `FIRE` and `SMOKE` boxes on the stream, and confirms a
+class across two samples before raising an alarm.
+
+Person detection raises a voice alert when a person is seen. Fire/smoke
+detection raises an app/voice alert but does not stop the patrol route; the
+arbiter remains the only component allowed to decide motion priority.
 
 ## Backend Options
 
 ```bash
 python3 run.py --camera-backend auto
+python3 run.py --camera-backend auto --person-detect
+python3 run.py --camera-backend auto --fire-smoke-detect
 python3 run.py --camera-backend picamera2 --camera 0
 python3 run.py --camera-backend v4l2 --camera 0
 python3 run.py --camera-backend synthetic --no-detect

@@ -144,7 +144,15 @@ class PersonDetector:
     def model_loaded(self) -> bool:
         return self._model_loaded
 
+    def clear(self) -> None:
+        with self._lock:
+            self._latest_frame = None
+            self._boxes = []
+            self._present = False
+
     def start(self) -> None:
+        if self._running or self._model_loaded:
+            return
         if not os.path.isfile(PROTOTXT) or not os.path.isfile(CAFFEMODEL):
             print(f"[detector] Model files not found in {MODEL_DIR}")
             print("[detector] Run: bash download_models.sh")
