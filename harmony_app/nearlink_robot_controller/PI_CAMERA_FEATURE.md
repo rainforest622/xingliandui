@@ -3,7 +3,7 @@
 The app now uses the Raspberry Pi web camera service as the robot camera view.
 
 - The main robot console embeds the camera view above the driving controls.
-- Default service URL: `http://10.17.120.33:8080/`
+- Default service URL: `http://192.168.43.42:8080/`
 - The tab provides quick buttons for:
   - `Dashboard`: `/`
   - `Stream`: `/stream.mjpg`

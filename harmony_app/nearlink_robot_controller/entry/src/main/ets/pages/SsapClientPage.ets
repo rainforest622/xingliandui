@@ -15,8 +15,8 @@ import { registerRobotSafetyStop, unregisterRobotSafetyStop } from './RobotSafet
 import { RouteCalibrationModel, RouteImageRecognizer, RouteLegModel, RoutePlanModel, RoutePlanner, RoutePointModel } from './RoutePlanner';
 
 const ROBOT_DEVICE_NAME: string = 'ws63_robot_mvp';
-const DEFAULT_PI_BASE_URL: string = 'http://10.17.120.33:8080';
-const DEFAULT_ROUTE_SERVICE_URL: string = 'http://10.17.120.33:8090';
+const DEFAULT_PI_BASE_URL: string = 'http://192.168.43.42:8080';
+const DEFAULT_ROUTE_SERVICE_URL: string = 'http://192.168.43.42:8090';
 const DEFAULT_CAMERA_PATH: string = '/driver';
 const DEFAULT_ROUTE_JSON_TEXT: string = `{
   "name": "industrial-square-patrol-v1",
@@ -90,11 +90,10 @@ const ROBOT_SERVICE_DISCOVERY_RETRY_MS: number = 500;
 const ROBOT_MOTION_REPEAT_MS: number = 300;
 const CAMERA_STATUS_POLL_MS: number = 3000;
 const CAMERA_RELOAD_FAILURES: number = 2;
-// The Pi snapshot drives the UI at 500 ms. M is only the WS63 sampling trigger,
-// so keep it at one second to leave the SLE response property clear for controls.
-const INSPECTION_HTTP_POLL_MS: number = 500;
-const INSPECTION_SLE_POLL_MS: number = 1000;
-const INSPECTION_SLE_SETTLE_MS: number = 650;
+// One monitor request every 500 ms keeps the mobile display responsive while
+// avoiding the former back-to-back G/M polling pattern that could leave SLE
+// busy. WS63 itself samples the ultrasonic module every 100 ms.
+const INSPECTION_POLL_MS: number = 500;
 const ROBOT_MONITOR_ALARM_ENV_INVALID: number = 1;
 const ROBOT_MONITOR_ALARM_OBSTACLE_INVALID: number = 2;
 const ROBOT_MONITOR_ALARM_OBSTACLE_BLOCKED: number = 4;
@@ -459,7 +458,6 @@ export struct SsapClientPage {
   cameraStatusTimer: number = -1;
   inspectionTimer: number = -1;
   inspectionPollBusy: boolean = false;
-  lastInspectionSlePollMs: number = 0;
   voiceTelemetryBusy: boolean = false;
   lastPhoneEnvAlarmMask: number = 0;
   lastPhoneEnvAlarmToastMs: number = 0;
@@ -813,7 +811,7 @@ export struct SsapClientPage {
       }
 
       Row({ space: 8 }) {
-        TextInput({ text: this.cameraBaseDraft, placeholder: 'http://10.17.120.33:8080' })
+        TextInput({ text: this.cameraBaseDraft, placeholder: 'http://192.168.43.42:8080' })
           .height(38)
           .fontSize(13)
           .layoutWeight(1)
@@ -2349,7 +2347,7 @@ export struct SsapClientPage {
     this.inspectionStatusText = this.serviceReady ? '自动路线巡检待启动' : '等待星闪服务';
     this.inspectionTimer = setInterval(() => {
       this.pollInspection(false);
-    }, INSPECTION_HTTP_POLL_MS);
+    }, INSPECTION_POLL_MS);
     this.pollInspection(true);
   }
 
@@ -2359,7 +2357,6 @@ export struct SsapClientPage {
       this.inspectionTimer = -1;
     }
     this.inspectionPollBusy = false;
-    this.lastInspectionSlePollMs = 0;
   }
 
   toggleInspectionMonitor() {
@@ -2390,22 +2387,17 @@ export struct SsapClientPage {
       }
       return;
     }
-    let now = Date.now();
-    if (!force && now - this.lastInspectionSlePollMs < INSPECTION_SLE_POLL_MS) {
-      return;
-    }
-    if (this.inspectionPollBusy) {
+    if (this.inspectionPollBusy && !force) {
       return;
     }
     this.inspectionPollBusy = true;
-    this.lastInspectionSlePollMs = now;
     this.inspectionStatusText = '正在读取巡检快照';
     // M contains the current obstacle and environment snapshot. Sending one
     // command per cycle preserves SLE command headroom for manual control.
     this.writeCommand('M', true, false);
     setTimeout(() => {
       this.inspectionPollBusy = false;
-    }, INSPECTION_SLE_SETTLE_MS);
+    }, Math.max(INSPECTION_POLL_MS - 80, 250));
   }
 
   @Builder
@@ -2447,7 +2439,7 @@ export struct SsapClientPage {
   }
 
   fetchVoiceTelemetry(force: boolean) {
-    if (this.voiceTelemetryBusy) {
+    if (this.voiceTelemetryBusy && !force) {
       return;
     }
     this.voiceTelemetryBusy = true;
