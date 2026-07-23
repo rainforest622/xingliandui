@@ -336,8 +336,8 @@ void setup()
     //{playid:11045,voice:十。}
     //{playid:11046,voice:百。}
     //{playid:11047,voice:千。}
-    //{playid:11048,voice:检测到人员靠近巡检区域，请注意避让。}
-    //{playid:11049,voice:检测到火焰或烟雾异常，巡检继续，请及时处理。}
+    //{playid:11048,voice:检测到人员闯入。}
+    //{playid:11049,voice:检测到火焰异常。}
 
     // Tianwen Block's "播报音设置(百度TTS)" generator emits this exact form.
     //{speak:小鹿-甜美女声,vol:16,speed:8,platform:baidu}
