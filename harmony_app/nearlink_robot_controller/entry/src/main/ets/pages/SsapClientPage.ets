@@ -95,6 +95,7 @@ const CAMERA_RELOAD_FAILURES: number = 2;
 const INSPECTION_HTTP_POLL_MS: number = 500;
 const INSPECTION_SLE_POLL_MS: number = 600;
 const INSPECTION_SLE_SETTLE_MS: number = 450;
+const INSPECTION_SLE_FRESH_MS: number = 1600;
 const ROBOT_MONITOR_ALARM_ENV_INVALID: number = 1;
 const ROBOT_MONITOR_ALARM_OBSTACLE_INVALID: number = 2;
 const ROBOT_MONITOR_ALARM_OBSTACLE_BLOCKED: number = 4;
@@ -269,6 +270,7 @@ interface PiVoiceTelemetry {
   threshold_mm?: number;
   obstacle_reason?: number;
   alarm_flags?: number;
+  sample_count?: number;
   age_s?: number;
 }
 
@@ -423,6 +425,9 @@ export struct SsapClientPage {
   @State cameraAlarmBusy: boolean = false;
   @State inspectionEnabled: boolean = false;
   @State inspectionStatusText: string = '等待启动巡检';
+  @State inspectionDistanceText: string = '--';
+  @State inspectionTemperatureText: string = '--';
+  @State inspectionHumidityText: string = '--';
   @State inspectionAlarmText: string = '未开始';
   @State inspectionAlarmFlags: number = 0;
   @State inspectionDetailText: string = '自动路线巡检：P 一键启动，G 查轨迹，M 查传感器';
@@ -459,6 +464,8 @@ export struct SsapClientPage {
   inspectionTimer: number = -1;
   inspectionPollBusy: boolean = false;
   lastInspectionSlePollMs: number = 0;
+  lastSleMonitorAtMs: number = 0;
+  lastInspectionSampleCount: number = -1;
   voiceTelemetryBusy: boolean = false;
   lastPhoneEnvAlarmMask: number = 0;
   lastPhoneEnvAlarmToastMs: number = 0;
@@ -1417,6 +1424,18 @@ export struct SsapClientPage {
       }
       .width('100%')
 
+      Row() {
+        this.InspectionMetric('距离', this.inspectionDistanceText, this.inspectionAlarmFlags === 0 ? '#fff1f5f9' : '#fffff7ed');
+        Blank().width('2%')
+        this.InspectionMetric('温度', this.inspectionTemperatureText,
+          (this.inspectionAlarmFlags & ROBOT_MONITOR_ALARM_TEMP_HIGH) !== 0 ? '#fffee2e2' : '#fff1f5f9');
+        Blank().width('2%')
+        this.InspectionMetric('湿度', this.inspectionHumidityText,
+          (this.inspectionAlarmFlags & ROBOT_MONITOR_ALARM_HUMIDITY_HIGH) !== 0 ? '#fffee2e2' : '#fff1f5f9');
+      }
+      .width('100%')
+      .margin({ top: 10 })
+
       if (this.phoneEnvAlarmActive) {
         this.PhoneEnvAlarmBanner();
       }
@@ -1500,6 +1519,28 @@ export struct SsapClientPage {
     .backgroundColor('#fffee2e2')
     .borderRadius(8)
     .border({ width: 1, color: '#fffca5a5' })
+  }
+
+  @Builder
+  InspectionMetric(label: string, value: string, bgColor: string) {
+    Column() {
+      Text(label)
+        .fontSize(11)
+        .fontColor('#ff64748b')
+      Text(value)
+        .fontSize(18)
+        .fontWeight(FontWeight.Bold)
+        .fontColor('#ff0f172a')
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .margin({ top: 4 })
+    }
+    .width('32%')
+    .height(70)
+    .padding(8)
+    .alignItems(HorizontalAlign.Start)
+    .backgroundColor(bgColor)
+    .borderRadius(8)
   }
 
   @Builder
@@ -2302,6 +2343,8 @@ export struct SsapClientPage {
     }
     this.inspectionPollBusy = false;
     this.lastInspectionSlePollMs = 0;
+    this.lastSleMonitorAtMs = 0;
+    this.lastInspectionSampleCount = -1;
   }
 
   toggleInspectionMonitor() {
@@ -2323,8 +2366,8 @@ export struct SsapClientPage {
   }
 
   pollInspection(force: boolean) {
-    // The Pi request only carries phone-side voice emergencies. The inspection
-    // snapshot is rendered solely from the direct WS63 MON response.
+    // Voice requests are mediated by the Pi, so query its snapshot even when
+    // the user has not enabled the SLE-driven automatic inspection loop.
     this.fetchVoiceTelemetry(force);
     if (!this.serviceReady || client === undefined) {
       if (force) {
@@ -2410,6 +2453,10 @@ export struct SsapClientPage {
           `voice telemetry request destroy ignored: ${(destroyErr as BusinessError).code}`);
       }
       if (err !== undefined && err !== null || data.responseCode < 200 || data.responseCode >= 300) {
+        if (force && !this.inspectionEnabled) {
+          this.inspectionSnapshotText = '树莓派实时传感器服务暂不可达';
+          this.inspectionSnapshotTime = this.nowText();
+        }
         return;
       }
 
@@ -2417,7 +2464,52 @@ export struct SsapClientPage {
       try {
         let payload = JSON.parse(resultText) as PiVoiceLatestPayload;
         this.handlePhoneVoiceEmergency(payload.emergency);
+        let telemetry = payload.telemetry;
+        if (telemetry === undefined || telemetry.available !== true) {
+          if (force && !this.inspectionEnabled) {
+            this.inspectionSnapshotText = '尚未收到 WS63 实时传感器快照';
+            this.inspectionSnapshotTime = this.nowText();
+          }
+          return;
+        }
+
+        let temperature = Number(telemetry.temperature_deci_c === undefined ? 0 : telemetry.temperature_deci_c);
+        let humidity = Number(telemetry.humidity_deci_percent === undefined ? 0 : telemetry.humidity_deci_percent);
+        let environmentValid = telemetry.environment_valid === true;
+        let obstacleEnabled = telemetry.obstacle_enabled === true;
+        let obstacleValid = telemetry.obstacle_valid === true;
+        let obstacleBlocked = telemetry.obstacle_blocked === true;
+        let distance = Number(telemetry.distance_mm === undefined ? 0 : telemetry.distance_mm);
+        let threshold = Number(telemetry.threshold_mm === undefined ? 0 : telemetry.threshold_mm);
+        let reason = Number(telemetry.obstacle_reason === undefined ? 0 : telemetry.obstacle_reason);
+        let alarms = Number(telemetry.alarm_flags === undefined ? 0 : telemetry.alarm_flags);
+        let sampleCount = Number(telemetry.sample_count === undefined ? -1 : telemetry.sample_count);
+        // Prefer the direct SLE monitor frame while it is fresh. The Pi endpoint
+        // remains the fallback if it has a newer WS63 sample.
+        let directMonitorFresh = Date.now() - this.lastSleMonitorAtMs < INSPECTION_SLE_FRESH_MS;
+        let piSampleNewer = sampleCount >= 0 && sampleCount > this.lastInspectionSampleCount;
+        if (!directMonitorFresh || piSampleNewer) {
+          this.updateInspectionEnv(environmentValid, temperature, humidity, false);
+          this.updateInspectionObstacle(obstacleEnabled, obstacleValid, obstacleBlocked, distance, threshold, reason);
+          this.inspectionAlarmFlags = alarms;
+          this.inspectionAlarmText = this.inspectionAlarmSummary(alarms);
+          this.handlePhoneEnvironmentAlarm(alarms, temperature, humidity);
+          if (sampleCount >= 0) {
+            this.lastInspectionSampleCount = sampleCount;
+          }
+        }
+
+        if (!directMonitorFresh) {
+          this.inspectionStatusText = this.environmentAlarmMask(alarms) !== 0 ? '温湿度异常报警' :
+            (this.inspectionEnabled ? '自动路线巡检中' : '实时感知数据已同步');
+          this.inspectionSnapshotText = `树莓派实时快照：温度 ${this.formatDeciValue(temperature)}°C，湿度 ${this.formatDeciValue(humidity)}%，距离 ${distance}mm`;
+          this.inspectionSnapshotTime = this.nowText();
+        }
       } catch (parseErr) {
+        if (force && !this.inspectionEnabled) {
+          this.inspectionSnapshotText = '树莓派实时传感器响应解析失败';
+          this.inspectionSnapshotTime = this.nowText();
+        }
       }
     });
   }
@@ -2758,12 +2850,16 @@ export struct SsapClientPage {
     this.responseSummary = '暂无响应';
     this.serviceInfo = '尚未发现小车服务';
     this.inspectionStatusText = '等待启动巡检';
+    this.inspectionDistanceText = '--';
+    this.inspectionTemperatureText = '--';
+    this.inspectionHumidityText = '--';
     this.inspectionAlarmText = '未开始';
     this.inspectionAlarmFlags = 0;
     this.inspectionDetailText = '自动路线巡检：P 一键启动，G 查轨迹，M 查传感器';
     this.inspectionLastUpdateText = '--:--:--';
     this.inspectionSnapshotText = '等待小车返回巡检快照';
     this.inspectionSnapshotTime = '--:--:--';
+    this.lastInspectionSampleCount = -1;
     this.phoneEnvAlarmActive = false;
     this.phoneEnvAlarmText = '手机端环境报警未触发';
     this.lastPhoneEnvAlarmMask = 0;
@@ -2865,6 +2961,41 @@ export struct SsapClientPage {
     }
   }
 
+  updateInspectionEnv(ok: boolean, temperature: number, humidity: number, notifyPhone: boolean = true) {
+    if (ok) {
+      this.inspectionTemperatureText = `${this.formatDeciValue(temperature)}°C`;
+      this.inspectionHumidityText = `${this.formatDeciValue(humidity)}%`;
+      if (notifyPhone) {
+        this.handlePhoneEnvironmentAlarm(this.environmentFlagsFromValues(temperature, humidity), temperature, humidity);
+      }
+    } else {
+      this.inspectionTemperatureText = '--';
+      this.inspectionHumidityText = '--';
+    }
+    this.inspectionLastUpdateText = this.nowText();
+  }
+
+  updateInspectionObstacle(
+    enabled: boolean,
+    valid: boolean,
+    blocked: boolean,
+    distance: number,
+    threshold: number,
+    reason: number
+  ) {
+    if (!enabled) {
+      this.inspectionDistanceText = '未启用';
+      this.inspectionDetailText = '距离传感器未启用';
+    } else if (!valid) {
+      this.inspectionDistanceText = '无效';
+      this.inspectionDetailText = `距离无效：${this.obstacleReasonName(reason)}`;
+    } else {
+      this.inspectionDistanceText = `${distance}mm`;
+      this.inspectionDetailText = `距离阈值 ${threshold}mm，${blocked ? '前方障碍' : '前方安全'}`;
+    }
+    this.inspectionLastUpdateText = this.nowText();
+  }
+
   updateInspectionMonitor(parts: Array<string>) {
     if (parts.length < 17) {
       this.inspectionStatusText = '巡检快照字段不完整';
@@ -2887,8 +3018,12 @@ export struct SsapClientPage {
     let envAge = Number(parts[15]);
     let obstacleAge = Number(parts[16]);
 
+    this.lastSleMonitorAtMs = Date.now();
+    this.lastInspectionSampleCount = sampleCount;
     this.motorStateText = motorReady ? '已就绪' : '未就绪';
     this.motionStateText = moving ? '运动中' : '已停止';
+    this.updateInspectionEnv(envOk, temperature, humidity, false);
+    this.updateInspectionObstacle(obstacleEnabled, obstacleValid, obstacleBlocked, distance, threshold, reason);
     this.inspectionAlarmFlags = alarmFlags;
     this.inspectionAlarmText = this.inspectionAlarmSummary(alarmFlags);
     this.handlePhoneEnvironmentAlarm(alarmFlags, temperature, humidity);
@@ -3217,6 +3352,23 @@ export struct SsapClientPage {
         } else {
           this.wheelCalibrationText = '左右轮校准下发失败';
         }
+        break;
+      }
+      case 'ENV': {
+        let ok = Number(parts[1]) === 1;
+        let temperature = Number(parts[2]);
+        let humidity = Number(parts[3]);
+        this.updateInspectionEnv(ok, temperature, humidity);
+        break;
+      }
+      case 'OBS': {
+        let enabled = Number(parts[1]) === 1;
+        let valid = Number(parts[2]) === 1;
+        let blocked = Number(parts[3]) === 1;
+        let distance = Number(parts[4]);
+        let threshold = Number(parts[5]);
+        let reason = parts.length > 6 ? Number(parts[6]) : -1;
+        this.updateInspectionObstacle(enabled, valid, blocked, distance, threshold, reason);
         break;
       }
       case 'MON':
