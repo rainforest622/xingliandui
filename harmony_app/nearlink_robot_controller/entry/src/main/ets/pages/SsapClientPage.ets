@@ -2378,8 +2378,8 @@ export struct SsapClientPage {
   }
 
   pollInspection(force: boolean) {
-    // The Pi endpoint is used for phone-side voice emergencies only. The
-    // inspection metrics are updated solely from the direct WS63 MON response.
+    // Voice requests are mediated by the Pi, so query its snapshot even when
+    // the user has not enabled the SLE-driven automatic inspection loop.
     this.fetchVoiceTelemetry(force);
     if (!this.serviceReady || client === undefined) {
       if (force) {
@@ -2458,6 +2458,9 @@ export struct SsapClientPage {
           `voice telemetry request destroy ignored: ${(destroyErr as BusinessError).code}`);
       }
       if (err !== undefined && err !== null || data.responseCode < 200 || data.responseCode >= 300) {
+        if (force && !this.inspectionEnabled) {
+          this.inspectionDetailText = '树莓派实时传感器服务暂不可达';
+        }
         return;
       }
 
@@ -2465,7 +2468,41 @@ export struct SsapClientPage {
       try {
         let payload = JSON.parse(resultText) as PiVoiceLatestPayload;
         this.handlePhoneVoiceEmergency(payload.emergency);
+        let telemetry = payload.telemetry;
+        if (telemetry === undefined || telemetry.available !== true) {
+          if (force && !this.inspectionEnabled) {
+            this.inspectionDetailText = '尚未收到 WS63 实时传感器快照';
+          }
+          return;
+        }
+
+        let temperature = Number(telemetry.temperature_deci_c === undefined ? 0 : telemetry.temperature_deci_c);
+        let humidity = Number(telemetry.humidity_deci_percent === undefined ? 0 : telemetry.humidity_deci_percent);
+        let environmentValid = telemetry.environment_valid === true;
+        let obstacleEnabled = telemetry.obstacle_enabled === true;
+        let obstacleValid = telemetry.obstacle_valid === true;
+        let obstacleBlocked = telemetry.obstacle_blocked === true;
+        let distance = Number(telemetry.distance_mm === undefined ? 0 : telemetry.distance_mm);
+        let threshold = Number(telemetry.threshold_mm === undefined ? 0 : telemetry.threshold_mm);
+        let reason = Number(telemetry.obstacle_reason === undefined ? 0 : telemetry.obstacle_reason);
+        let alarms = Number(telemetry.alarm_flags === undefined ? 0 : telemetry.alarm_flags);
+        this.updateInspectionEnv(environmentValid, temperature, humidity, false);
+        this.updateInspectionObstacle(obstacleEnabled, obstacleValid, obstacleBlocked, distance, threshold, reason);
+        this.inspectionAlarmFlags = alarms;
+        this.inspectionAlarmText = this.inspectionAlarmSummary(alarms);
+        this.handlePhoneEnvironmentAlarm(alarms, temperature, humidity);
+
+        let voiceAction = payload.voice === undefined ? '' : this.textOrDefault(payload.voice.last_action, '');
+        let voiceIntent = payload.voice === undefined ? '' : this.textOrDefault(payload.voice.last_intent, '');
+        let sourceText = voiceAction.length > 0 ? `语音请求：${voiceIntent}，${voiceAction}` : '实时数据已同步';
+        this.inspectionDetailText = `${sourceText}；数据源：树莓派 / WS63`;
+        this.inspectionStatusText = this.environmentAlarmMask(alarms) !== 0 ? '温湿度异常报警' :
+          (this.inspectionEnabled ? '自动路线巡检中' : '实时感知数据已同步');
+        this.inspectionLastUpdateText = this.nowText();
       } catch (parseErr) {
+        if (force && !this.inspectionEnabled) {
+          this.inspectionDetailText = '树莓派实时传感器响应解析失败';
+        }
       }
     });
   }
@@ -3301,6 +3338,23 @@ export struct SsapClientPage {
         }
         break;
       }
+      case 'ENV': {
+        let ok = Number(parts[1]) === 1;
+        let temperature = Number(parts[2]);
+        let humidity = Number(parts[3]);
+        this.updateInspectionEnv(ok, temperature, humidity);
+        break;
+      }
+      case 'OBS': {
+        let enabled = Number(parts[1]) === 1;
+        let valid = Number(parts[2]) === 1;
+        let blocked = Number(parts[3]) === 1;
+        let distance = Number(parts[4]);
+        let threshold = Number(parts[5]);
+        let reason = parts.length > 6 ? Number(parts[6]) : -1;
+        this.updateInspectionObstacle(enabled, valid, blocked, distance, threshold, reason);
+        break;
+      }
       case 'MON':
         this.updateInspectionMonitor(parts);
         break;
@@ -3341,10 +3395,20 @@ export struct SsapClientPage {
         let leg = Number(parts[4]);
         let loop = Number(parts[5]);
         let alarmFlags = Number(parts[6]);
+        let enabled = Number(parts[7]) === 1;
+        let valid = Number(parts[8]) === 1;
+        let blocked = Number(parts[9]) === 1;
+        let distance = Number(parts[10]);
+        let threshold = Number(parts[11]);
+        let reason = Number(parts[12]);
         this.inspectionEnabled = active;
         this.motionStateText = active ? this.patrolPhaseName(phase) : '已停止';
         this.motorStateText = status === 5 ? '电机异常' : '已就绪';
-        this.inspectionStatusText = this.environmentAlarmMask(this.inspectionAlarmFlags) !== 0 ? '温湿度异常报警' :
+        this.inspectionAlarmFlags = alarmFlags;
+        this.inspectionAlarmText = this.inspectionAlarmSummary(alarmFlags);
+        this.handlePhoneEnvironmentAlarm(alarmFlags);
+        this.updateInspectionObstacle(enabled, valid, blocked, distance, threshold, reason);
+        this.inspectionStatusText = this.environmentAlarmMask(alarmFlags) !== 0 ? '温湿度异常报警' :
           (active ? `自定义路线巡检中：第 ${leg + 1}/${this.routeSegmentCount} 段` : `路线巡检未启动：${this.statusName(status)}`);
         this.inspectionDetailText = `阶段：${this.patrolPhaseName(phase)}，已完成 ${loop} 圈，${this.inspectionAlarmSummary(alarmFlags)}`;
         break;
