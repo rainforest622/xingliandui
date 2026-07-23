@@ -90,12 +90,11 @@ const ROBOT_SERVICE_DISCOVERY_RETRY_MS: number = 500;
 const ROBOT_MOTION_REPEAT_MS: number = 300;
 const CAMERA_STATUS_POLL_MS: number = 3000;
 const CAMERA_RELOAD_FAILURES: number = 2;
-// The Pi snapshot is a resilient fallback. The SLE MON response is the primary
-// live source, and is sampled frequently enough for the inspection display.
+// The Pi snapshot drives the UI at 500 ms. M is only the WS63 sampling trigger,
+// so keep it at one second to leave the SLE response property clear for controls.
 const INSPECTION_HTTP_POLL_MS: number = 500;
-const INSPECTION_SLE_POLL_MS: number = 600;
-const INSPECTION_SLE_SETTLE_MS: number = 450;
-const INSPECTION_SLE_FRESH_MS: number = 1600;
+const INSPECTION_SLE_POLL_MS: number = 1000;
+const INSPECTION_SLE_SETTLE_MS: number = 650;
 const ROBOT_MONITOR_ALARM_ENV_INVALID: number = 1;
 const ROBOT_MONITOR_ALARM_OBSTACLE_INVALID: number = 2;
 const ROBOT_MONITOR_ALARM_OBSTACLE_BLOCKED: number = 4;
@@ -461,7 +460,6 @@ export struct SsapClientPage {
   inspectionTimer: number = -1;
   inspectionPollBusy: boolean = false;
   lastInspectionSlePollMs: number = 0;
-  lastSleMonitorAtMs: number = 0;
   voiceTelemetryBusy: boolean = false;
   lastPhoneEnvAlarmMask: number = 0;
   lastPhoneEnvAlarmToastMs: number = 0;
@@ -2362,7 +2360,6 @@ export struct SsapClientPage {
     }
     this.inspectionPollBusy = false;
     this.lastInspectionSlePollMs = 0;
-    this.lastSleMonitorAtMs = 0;
   }
 
   toggleInspectionMonitor() {
@@ -2497,16 +2494,11 @@ export struct SsapClientPage {
         let threshold = Number(telemetry.threshold_mm === undefined ? 0 : telemetry.threshold_mm);
         let reason = Number(telemetry.obstacle_reason === undefined ? 0 : telemetry.obstacle_reason);
         let alarms = Number(telemetry.alarm_flags === undefined ? 0 : telemetry.alarm_flags);
-        // Prefer the direct SLE monitor frame while it is fresh. The Pi endpoint
-        // remains the fallback if the SLE response is temporarily unavailable.
-        let directMonitorFresh = Date.now() - this.lastSleMonitorAtMs < INSPECTION_SLE_FRESH_MS;
-        if (!directMonitorFresh) {
-          this.updateInspectionEnv(environmentValid, temperature, humidity, false);
-          this.updateInspectionObstacle(obstacleEnabled, obstacleValid, obstacleBlocked, distance, threshold, reason);
-          this.inspectionAlarmFlags = alarms;
-          this.inspectionAlarmText = this.inspectionAlarmSummary(alarms);
-          this.handlePhoneEnvironmentAlarm(alarms, temperature, humidity);
-        }
+        this.updateInspectionEnv(environmentValid, temperature, humidity, false);
+        this.updateInspectionObstacle(obstacleEnabled, obstacleValid, obstacleBlocked, distance, threshold, reason);
+        this.inspectionAlarmFlags = alarms;
+        this.inspectionAlarmText = this.inspectionAlarmSummary(alarms);
+        this.handlePhoneEnvironmentAlarm(alarms, temperature, humidity);
 
         let voiceAction = payload.voice === undefined ? '' : this.textOrDefault(payload.voice.last_action, '');
         let voiceIntent = payload.voice === undefined ? '' : this.textOrDefault(payload.voice.last_intent, '');
@@ -3024,7 +3016,6 @@ export struct SsapClientPage {
     let envAge = Number(parts[15]);
     let obstacleAge = Number(parts[16]);
 
-    this.lastSleMonitorAtMs = Date.now();
     this.motorStateText = motorReady ? '已就绪' : '未就绪';
     this.motionStateText = moving ? '运动中' : '已停止';
     this.updateInspectionEnv(envOk, temperature, humidity, false);
@@ -3412,12 +3403,20 @@ export struct SsapClientPage {
         let leg = Number(parts[4]);
         let loop = Number(parts[5]);
         let alarmFlags = Number(parts[6]);
+        let enabled = Number(parts[7]) === 1;
+        let valid = Number(parts[8]) === 1;
+        let blocked = Number(parts[9]) === 1;
+        let distance = Number(parts[10]);
+        let threshold = Number(parts[11]);
+        let reason = Number(parts[12]);
         this.inspectionEnabled = active;
         this.motionStateText = active ? this.patrolPhaseName(phase) : '已停止';
         this.motorStateText = status === 5 ? '电机异常' : '已就绪';
-        // PATROL is route progress and may carry an older range snapshot. Only
-        // MON or the Pi live endpoint may update inspection sensor values.
-        this.inspectionStatusText = this.environmentAlarmMask(this.inspectionAlarmFlags) !== 0 ? '温湿度异常报警' :
+        this.inspectionAlarmFlags = alarmFlags;
+        this.inspectionAlarmText = this.inspectionAlarmSummary(alarmFlags);
+        this.handlePhoneEnvironmentAlarm(alarmFlags);
+        this.updateInspectionObstacle(enabled, valid, blocked, distance, threshold, reason);
+        this.inspectionStatusText = this.environmentAlarmMask(alarmFlags) !== 0 ? '温湿度异常报警' :
           (active ? `自定义路线巡检中：第 ${leg + 1}/${this.routeSegmentCount} 段` : `路线巡检未启动：${this.statusName(status)}`);
         this.inspectionDetailText = `阶段：${this.patrolPhaseName(phase)}，已完成 ${loop} 圈，${this.inspectionAlarmSummary(alarmFlags)}`;
         break;
