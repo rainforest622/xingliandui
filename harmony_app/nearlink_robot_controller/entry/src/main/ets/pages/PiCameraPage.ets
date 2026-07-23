@@ -3,7 +3,7 @@
  */
 import { webview } from '@kit.ArkWeb';
 
-const DEFAULT_PI_BASE_URL: string = 'http://192.168.43.42:8080';
+const DEFAULT_PI_BASE_URL: string = 'http://10.17.120.33:8080';
 
 @Component
 export struct PiCameraPage {
