@@ -2392,9 +2392,10 @@ export struct SsapClientPage {
     }
     this.inspectionPollBusy = true;
     this.inspectionStatusText = '正在读取巡检快照';
-    // M contains the current obstacle and environment snapshot. Sending one
-    // command per cycle preserves SLE command headroom for manual control.
-    this.writeCommand('M', true, false);
+    // Match the device-page return view: WS63 publishes MON through the
+    // response notification, so do not read the response property and risk
+    // consuming an older command's cached response.
+    this.writeCommand('M', false, false);
     setTimeout(() => {
       this.inspectionPollBusy = false;
     }, Math.max(INSPECTION_POLL_MS - 80, 250));
